@@ -2,7 +2,7 @@
 import os
 
 # Paths
-WORK_DIR = "runs/enwik8_unet"
+#WORK_DIR = "runs/enwik8_unet"  #commented when running base
 DATA_PATH = "data/enwik8"   # raw enwik8 file (100MB) named "enwik8" (no extension)
 
 # Repro
@@ -27,7 +27,7 @@ BLOCK_SIZE = 1024
 BATCH_SIZE = 128 #16 < 64
 GRAD_ACCUM = 2
 
-MAX_STEPS = 200_000
+MAX_STEPS = 100_000
 WARMUP_STEPS = 2_000
 
 LR = 3e-4
@@ -42,3 +42,8 @@ EVAL_INTERVAL = 1000
 EVAL_ITERS = 100
 CKPT_INTERVAL = 2000           # save latest every N steps
 CKPT_SNAPSHOT_INTERVAL = 10000 # also save runs/enwik8_unet/ckpt_step_XXXXXX.pt (0 to disable)
+
+
+#For baseline
+WORK_DIR = "runs/enwik8_baseline"
+NUM_LAYERS = 12

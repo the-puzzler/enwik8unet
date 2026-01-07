@@ -12,6 +12,8 @@ import torch.nn.functional as F
 
 import config as C
 from unet_transformer import UNetTransformer
+from baseline_transformer import BaselineTransformer  # for base
+
 
 LN2 = math.log(2.0)
 
