@@ -179,13 +179,23 @@ def main():
     )
 
     # Model
-    model = UNetTransformer(
+    # model = UNetTransformer(
+    #     vocab_size=C.VOCAB_SIZE,
+    #     dim=C.DIM,
+    #     num_heads=C.NUM_HEADS,
+    #     mlp_ratio=C.MLP_RATIO,
+    #     dropout=C.DROPOUT,
+    #     window_sizes=C.WINDOW_SIZES,
+    # ).to(device)
+
+
+    model = BaselineTransformer(
         vocab_size=C.VOCAB_SIZE,
         dim=C.DIM,
         num_heads=C.NUM_HEADS,
         mlp_ratio=C.MLP_RATIO,
         dropout=C.DROPOUT,
-        window_sizes=C.WINDOW_SIZES,
+        num_layers=C.NUM_LAYERS, 
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())

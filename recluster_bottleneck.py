@@ -11,6 +11,7 @@ Requires: umap-learn, hdbscan, matplotlib. wordcloud is optional.
 import os
 import re
 import argparse
+import math
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -36,6 +37,10 @@ def generate_wordclouds(spans_np, labels, out_dir):
         print("wordcloud not installed; skipping wordcloud generation.")
         return
 
+    eps = 1e-6
+    min_in_docs = 2
+    min_in_frac = 0.1
+
     stopwords = {
         "the", "and", "of", "to", "a", "in", "for", "is", "on", "that", "with", "as", "by",
         "be", "are", "this", "from", "or", "an", "at", "it", "was", "not", "which", "have",
@@ -45,47 +50,103 @@ def generate_wordclouds(spans_np, labels, out_dir):
         "html", "htm", "xml", "img", "src", "ref", "table", "tr", "td", "th", "span",
         "div", "font", "style", "class", "align", "center", "left", "right", "nowrap",
         "colspan", "rowspan", "width", "height", "align", "title", "body", "head",
+        "ccffcc", "cccccc",
+        "bgcolor", "cellspacing", "cellpadding", "border", "valign", "wikitable",
+        "1px", "1em", "png", "jpg", "thumb",
+        "redirect", "category", "external", "links", "references", "isbn", "pdf",
+        "edu", "gov", "php", "index", "archive",
     }
 
     tsv_lines = []
+    wc_images = []
+    wc_labels = []
 
-    unique = sorted(set(labels))
-    for lab in unique:
-        if lab < 0:
-            continue  # skip noise
-        mask = labels == lab
-        if mask.sum() == 0:
-            continue
-        bytes_flat = spans_np[mask].flatten()
-        # Decode bytes to crude text, strip HTML/XML tags, lowercased
-        decoded = "".join(chr(b) if 32 <= b < 127 else " " for b in bytes_flat)
+    total_docs = spans_np.shape[0]
+    global_doc_counts = {}
+    cluster_doc_counts = {}
+    cluster_sizes = {}
+
+    for span, lab in zip(spans_np, labels):
+        decoded = "".join(chr(b) if 32 <= b < 127 else " " for b in span)
         decoded = re.sub(r"<[^>]+>", " ", decoded)
         decoded = decoded.lower()
         tokens = re.split(r"[^a-z0-9]+", decoded)
-        tokens = [t for t in tokens if len(t) > 2 and t not in stopwords and t not in html_noise]
+        tokens = {t for t in tokens if len(t) > 2 and t not in stopwords and t not in html_noise}
         if not tokens:
             continue
-        # Count tokens for export
-        counts = {}
         for t in tokens:
-            counts[t] = counts.get(t, 0) + 1
-        # Save counts to TSV lines
-        tsv_lines.append(f"# Cluster {lab} (n={mask.sum()})\nword\tcount\n")
-        for word, cnt in sorted(counts.items(), key=lambda kv: kv[1], reverse=True):
-            tsv_lines.append(f"{word}\t{cnt}\n")
+            global_doc_counts[t] = global_doc_counts.get(t, 0) + 1
+        if lab < 0:
+            continue
+        if lab not in cluster_doc_counts:
+            cluster_doc_counts[lab] = {}
+            cluster_sizes[lab] = 0
+        cluster_sizes[lab] += 1
+        for t in tokens:
+            cluster_doc_counts[lab][t] = cluster_doc_counts[lab].get(t, 0) + 1
+
+    unique = sorted(cluster_doc_counts.keys())
+    for lab in unique:
+        in_docs = cluster_sizes.get(lab, 0)
+        out_docs = total_docs - in_docs
+        if in_docs == 0 or out_docs <= 0:
+            continue
+        counts = {}
+        rows = []
+        for word, in_count in cluster_doc_counts[lab].items():
+            out_count = global_doc_counts.get(word, 0) - in_count
+            p_in = in_count / in_docs
+            p_out = out_count / out_docs
+            score = math.log((p_in + eps) / (p_out + eps))
+            if score <= 0:
+                continue
+            if in_count < min_in_docs or p_in < min_in_frac:
+                continue
+            counts[word] = score
+            rows.append((word, score, p_in, p_out, in_count, out_count))
+
+        if not counts:
+            continue
+
+        tsv_lines.append(f"# Cluster {lab} (n={in_docs})\nword\tscore\tp_in\tp_out\tin_docs\tout_docs\n")
+        for word, score, p_in, p_out, in_count, out_count in sorted(rows, key=lambda r: r[1], reverse=True):
+            tsv_lines.append(f"{word}\t{score:.4f}\t{p_in:.3f}\t{p_out:.3f}\t{in_count}\t{out_count}\n")
         tsv_lines.append("\n")
 
-        # Build word cloud from counts
-        text = " ".join(tokens)
         wc = WordCloud(width=800, height=400, max_words=200, background_color="white").generate_from_frequencies(counts)
-        out_path = os.path.join(out_dir, f"wordcloud_{lab}.png")
-        wc.to_file(out_path)
+        wc_images.append(wc.to_array())
+        wc_labels.append(lab)
 
     if tsv_lines:
         tsv_path = os.path.join(out_dir, "wordcloud_terms.tsv")
         with open(tsv_path, "w", encoding="utf-8") as f:
             f.writelines(tsv_lines)
         print(f"Saved word cloud term counts to {tsv_path}")
+
+    if wc_images:
+        n = len(wc_images)
+        cols = max(1, math.ceil(math.sqrt(n)))
+        rows = math.ceil(n / cols)
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3.5))
+        if rows == 1 and cols == 1:
+            axes = [axes]
+        axes = [axes] if rows == 1 else axes
+        axes = axes.flatten() if hasattr(axes, "flatten") else axes
+
+        for idx, (img, lab) in enumerate(zip(wc_images, wc_labels)):
+            ax = axes[idx]
+            ax.imshow(img)
+            ax.set_title(f"Cluster {lab}")
+            ax.axis("off")
+
+        for idx in range(len(wc_images), rows * cols):
+            axes[idx].axis("off")
+
+        out_path = os.path.join(out_dir, "wordcloud_grid.png")
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=200)
+        plt.close()
+        print(f"Saved word cloud grid to {out_path}")
 
 
 def main():
