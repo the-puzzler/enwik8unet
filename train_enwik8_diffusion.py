@@ -8,9 +8,10 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import config_diffusion as C
-from diffusion_unet_transformer import TextDiffusionUNetTransformer, cosine_sigreg_loss
+from diffusion_unet_transformer import TextDiffusionUNetTransformer
 from sigreg import SIGReg
 
 
@@ -106,12 +107,59 @@ def alpha_sigma(t: torch.Tensor):
     return a, s
 
 
-def cosine_decode_xent_nats(pred: torch.Tensor, tokens: torch.Tensor, emb_weight: torch.Tensor, tau: float) -> torch.Tensor:
-    pred_n = nn.functional.normalize(pred.float(), p=2, dim=-1)
-    emb_n = nn.functional.normalize(emb_weight.float(), p=2, dim=-1)
-    logits = pred_n @ emb_n.t()
-    logits = logits / float(tau)
-    return nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), tokens.view(-1))
+class LossAwareTSampler:
+    def __init__(self, num_bins: int, ema_beta: float, sample_power: float):
+        self.num_bins = int(num_bins)
+        self.ema_beta = float(ema_beta)
+        self.sample_power = float(sample_power)
+        self.ema = torch.ones(self.num_bins, dtype=torch.float32)
+
+    def to(self, device: torch.device):
+        self.ema = self.ema.to(device)
+        return self
+
+    @torch.no_grad()
+    def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        probs = torch.clamp(self.ema, min=1e-8).pow(self.sample_power)
+        probs = probs / probs.sum()
+        bins = torch.multinomial(probs, num_samples=int(batch_size), replacement=True)
+        u = torch.rand(int(batch_size), device=device)
+        t = (bins.to(device) + u) / float(self.num_bins)
+        return t.clamp_(0.0, 1.0)
+
+    @torch.no_grad()
+    def update(self, t: torch.Tensor, per_example_loss: torch.Tensor):
+        # t: [B], per_example_loss: [B] (float)
+        t = t.detach().float().clamp(0.0, 1.0)
+        per_example_loss = per_example_loss.detach().float()
+        bins = torch.clamp((t * self.num_bins).long(), min=0, max=self.num_bins - 1)
+        # EMA update per bin (vectorized via scatter add/count)
+        sums = torch.zeros_like(self.ema)
+        counts = torch.zeros_like(self.ema)
+        sums.scatter_add_(0, bins, per_example_loss)
+        counts.scatter_add_(0, bins, torch.ones_like(per_example_loss))
+        means = sums / torch.clamp(counts, min=1.0)
+        touched = counts > 0
+        self.ema[touched] = self.ema[touched] * self.ema_beta + means[touched] * (1.0 - self.ema_beta)
+
+
+def l2_decode_xent_nats(pred: torch.Tensor, tokens: torch.Tensor, emb_weight: torch.Tensor, tau: float) -> torch.Tensor:
+    # Gaussian classifier in embedding space:
+    #   p(token=i | pred) ∝ exp(-||pred - e_i||^2 / (2*tau^2))
+    pred_f = pred.float()
+    emb_f = emb_weight.float()
+    pred_sq = (pred_f * pred_f).sum(dim=-1, keepdim=True)  # [B,S,1]
+    emb_sq = (emb_f * emb_f).sum(dim=-1)  # [V]
+    dot = pred_f @ emb_f.t()  # [B,S,V]
+    dist2 = pred_sq + emb_sq - 2.0 * dot
+    logits = -dist2 / (2.0 * (float(tau) ** 2))
+    return F.cross_entropy(logits.view(-1, logits.size(-1)), tokens.view(-1))
+
+
+def cosine_distance(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    pred_n = F.normalize(pred.float(), p=2, dim=-1)
+    target_n = F.normalize(target.float(), p=2, dim=-1)
+    return (1.0 - (pred_n * target_n).sum(dim=-1)).mean()
 
 
 @torch.no_grad()
@@ -119,6 +167,7 @@ def estimate_loss(model, token_emb, sigreg, data_arr, block_size, batch_size, ev
     model.eval()
     token_emb.eval()
     total_losses = []
+    mse_losses = []
     cosine_losses = []
     sigreg_losses = []
     sigreg_raw_terms = []
@@ -137,11 +186,13 @@ def estimate_loss(model, token_emb, sigreg, data_arr, block_size, batch_size, ev
             s = s[:, None, None].to(dtype=x0.dtype)
             xt = a * x0 + s * eps
             pred = model(xt, t, mask=None)
-            cosine_loss = cosine_sigreg_loss(pred, x0)
-            total_loss = cosine_loss + sigreg_loss
-            xent_nats = cosine_decode_xent_nats(pred, tokens, token_emb.weight, C.DECODE_TAU)
+            mse_loss = F.mse_loss(pred, x0)
+            cos_loss = cosine_distance(pred, x0)
+            total_loss = mse_loss + sigreg_loss
+            xent_nats = l2_decode_xent_nats(pred, tokens, token_emb.weight, C.DECODE_TAU)
         total_losses.append(total_loss.item())
-        cosine_losses.append(cosine_loss.item())
+        mse_losses.append(mse_loss.item())
+        cosine_losses.append(cos_loss.item())
         sigreg_losses.append(float(sigreg_loss))
         sigreg_raw_terms.append(sigreg_raw.item())
         xent_losses.append(xent_nats.item())
@@ -150,6 +201,7 @@ def estimate_loss(model, token_emb, sigreg, data_arr, block_size, batch_size, ev
     token_emb.train()
     return (
         float(np.mean(total_losses)),
+        float(np.mean(mse_losses)),
         float(np.mean(cosine_losses)),
         float(np.mean(sigreg_losses)),
         float(np.mean(sigreg_raw_terms)),
@@ -177,12 +229,16 @@ class TextLogger:
         ensure_dir(work_dir)
         self.log_path = os.path.join(work_dir, "train.log")
         self.csv_path = os.path.join(work_dir, "metrics.csv")
-        desired_header = "time,step,split,total_loss,cosine_loss,sigreg_loss,sigreg_raw,xent_nats,bpb,lr,tok_per_sec\n"
+        desired_header = (
+            "time,step,split,total_loss,mse_loss,cosine_loss,sigreg_loss,sigreg_raw,xent_nats,bpb,"
+            "uniform_total_loss,uniform_mse_loss,uniform_cosine_loss,uniform_xent_nats,uniform_bpb,"
+            "lr,tok_per_sec\n"
+        )
         if os.path.isfile(self.csv_path):
             with open(self.csv_path, "r", encoding="utf-8") as f:
                 first = f.readline()
             if first != desired_header:
-                self.csv_path = os.path.join(work_dir, "metrics_v2.csv")
+                self.csv_path = os.path.join(work_dir, "metrics_v4.csv")
         if not os.path.isfile(self.csv_path):
             with open(self.csv_path, "w", encoding="utf-8") as f:
                 f.write(desired_header)
@@ -198,17 +254,25 @@ class TextLogger:
         step: int,
         split: str,
         total_loss: float,
+        mse_loss: float,
         cosine_loss: float,
         sigreg_loss: float,
         sigreg_raw: float,
         xent_nats: float,
         bpb: float,
+        uniform_total_loss: float,
+        uniform_mse_loss: float,
+        uniform_cosine_loss: float,
+        uniform_xent_nats: float,
+        uniform_bpb: float,
         lr: float,
         tok_per_sec: float,
     ):
         with open(self.csv_path, "a", encoding="utf-8") as f:
             f.write(
-                f"{now_str()},{step},{split},{total_loss:.6f},{cosine_loss:.6f},{sigreg_loss:.6f},{sigreg_raw:.6f},{xent_nats:.6f},{bpb:.6f},{lr:.8e},{tok_per_sec:.2f}\n"
+                f"{now_str()},{step},{split},{total_loss:.6f},{mse_loss:.6f},{cosine_loss:.6f},{sigreg_loss:.6f},{sigreg_raw:.6f},{xent_nats:.6f},{bpb:.6f},"
+                f"{uniform_total_loss:.6f},{uniform_mse_loss:.6f},{uniform_cosine_loss:.6f},{uniform_xent_nats:.6f},{uniform_bpb:.6f},"
+                f"{lr:.8e},{tok_per_sec:.2f}\n"
             )
 
 
@@ -253,6 +317,9 @@ def main():
         out_dim=C.OUT_DIM,
     ).to(device)
     sigreg = SIGReg(knots=C.SIGREG_KNOTS).to(device)
+    t_sampler = None
+    if getattr(C, "T_SAMPLER", "uniform") == "loss_aware":
+        t_sampler = LossAwareTSampler(C.T_BINS, C.T_EMA_BETA, C.T_SAMPLE_POWER).to(device)
 
     n_params = sum(p.numel() for p in model.parameters()) + sum(p.numel() for p in token_emb.parameters())
     logger.log_line(f"Model+embed params: {n_params:,}")
@@ -274,6 +341,8 @@ def main():
     if ckpt is not None:
         token_emb.load_state_dict(ckpt["token_emb"])
         model.load_state_dict(ckpt["model"])
+        if t_sampler is not None and ckpt.get("t_sampler_ema") is not None:
+            t_sampler.ema.copy_(ckpt["t_sampler_ema"].to(device))
 
     if C.USE_COMPILE:
         model = torch.compile(model)
@@ -312,15 +381,31 @@ def main():
 
         optimizer.zero_grad(set_to_none=True)
         accum_total = 0.0
+        accum_mse = 0.0
         accum_cosine = 0.0
         accum_sigreg_loss = 0.0
         accum_sigreg_raw = 0.0
         accum_xent_nats = 0.0
         accum_bpb = 0.0
+        accum_u_total = 0.0
+        accum_u_mse = 0.0
+        accum_u_cosine = 0.0
+        accum_u_xent = 0.0
+        accum_u_bpb = 0.0
+        uniform_count = 0
 
         for _ in range(C.GRAD_ACCUM):
             tokens = sample_tokens(train_arr, C.BATCH_SIZE, C.BLOCK_SIZE, device)
-            t = torch.rand(tokens.size(0), device=device)
+            if t_sampler is not None and step >= getattr(C, "T_WARMUP_T_STEPS", 0):
+                if torch.rand((), device=device).item() < float(getattr(C, "T_UNIFORM_MIX", 0.0)):
+                    t = torch.rand(tokens.size(0), device=device)
+                    is_uniform = True
+                else:
+                    t = t_sampler.sample(tokens.size(0), device=device)
+                    is_uniform = False
+            else:
+                t = torch.rand(tokens.size(0), device=device)
+                is_uniform = True
 
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=C.USE_AMP):
                 x0 = token_emb(tokens)
@@ -330,20 +415,32 @@ def main():
                 s = s[:, None, None].to(dtype=x0.dtype)
                 xt = a * x0 + s * eps
                 pred = model(xt, t, mask=None)
-                cosine_loss = cosine_sigreg_loss(pred, x0)
-                xent_nats = cosine_decode_xent_nats(pred, tokens, token_emb.weight, C.DECODE_TAU)
+                per_ex_mse = F.mse_loss(pred.float(), x0.float(), reduction="none").mean(dim=(1, 2))
+                mse_loss = per_ex_mse.mean()
+                cos_loss = cosine_distance(pred, x0)
+                xent_nats = l2_decode_xent_nats(pred, tokens, token_emb.weight, C.DECODE_TAU)
+            if t_sampler is not None and step >= getattr(C, "T_WARMUP_T_STEPS", 0):
+                t_sampler.update(t, per_ex_mse)
             sigreg_raw = sigreg(token_emb.weight)
             sigreg_loss = float(C.SIGREG_WEIGHT) * sigreg_raw
-            total_loss = cosine_loss + sigreg_loss
+            total_loss = mse_loss + sigreg_loss
             loss = total_loss / C.GRAD_ACCUM
 
             scaler.scale(loss).backward()
             accum_total += total_loss.item()
-            accum_cosine += cosine_loss.item()
+            accum_mse += mse_loss.item()
+            accum_cosine += cos_loss.item()
             accum_sigreg_loss += float(sigreg_loss)
             accum_sigreg_raw += sigreg_raw.item()
             accum_xent_nats += xent_nats.item()
             accum_bpb += (xent_nats / LN2).item()
+            if is_uniform:
+                uniform_count += 1
+                accum_u_total += total_loss.item()
+                accum_u_mse += mse_loss.item()
+                accum_u_cosine += cos_loss.item()
+                accum_u_xent += xent_nats.item()
+                accum_u_bpb += (xent_nats / LN2).item()
             tokens_seen += tokens.numel()
 
         if C.CLIP_GRAD_NORM and C.CLIP_GRAD_NORM > 0:
@@ -358,23 +455,37 @@ def main():
             dt = now - last_log_time
             tok_per_sec = (tokens_seen - tokens_seen_at_last_log) / max(1e-9, dt)
             train_total = accum_total / C.GRAD_ACCUM
+            train_mse = accum_mse / C.GRAD_ACCUM
             train_cosine = accum_cosine / C.GRAD_ACCUM
             train_sigreg_loss = accum_sigreg_loss / C.GRAD_ACCUM
             train_sigreg_raw = accum_sigreg_raw / C.GRAD_ACCUM
             train_xent_nats = accum_xent_nats / C.GRAD_ACCUM
             train_bpb = accum_bpb / C.GRAD_ACCUM
+            u_denom = max(1, uniform_count)
+            u_total = accum_u_total / u_denom
+            u_mse = accum_u_mse / u_denom
+            u_cosine = accum_u_cosine / u_denom
+            u_xent = accum_u_xent / u_denom
+            u_bpb = accum_u_bpb / u_denom
             logger.log_line(
-                f"step {step} | lr {lr:.2e} | total {train_total:.6f} | cosine {train_cosine:.6f} | sigreg {train_sigreg_loss:.6f} | xent {train_xent_nats:.6f} | bpb {train_bpb:.6f} | tok/s {human_num(tok_per_sec)}"
+                f"step {step} | lr {lr:.2e} | total {train_total:.6f} | mse {train_mse:.6f} | cosine {train_cosine:.6f} | sigreg {train_sigreg_loss:.6f} | xent {train_xent_nats:.6f} | bpb {train_bpb:.6f} | "
+                f"uniform(total/mse/xent) {u_total:.6f}/{u_mse:.6f}/{u_xent:.6f} | tok/s {human_num(tok_per_sec)}"
             )
             logger.log_metric(
                 step,
                 "train",
                 train_total,
+                train_mse,
                 train_cosine,
                 train_sigreg_loss,
                 train_sigreg_raw,
                 train_xent_nats,
                 train_bpb,
+                u_total,
+                u_mse,
+                u_cosine,
+                u_xent,
+                u_bpb,
                 lr,
                 tok_per_sec,
             )
@@ -382,21 +493,27 @@ def main():
             tokens_seen_at_last_log = tokens_seen
 
         if step > 0 and step % C.EVAL_INTERVAL == 0:
-            val_total, val_cosine, val_sigreg_loss, val_sigreg_raw, val_xent_nats, val_bpb = estimate_loss(
+            val_total, val_mse, val_cosine, val_sigreg_loss, val_sigreg_raw, val_xent_nats, val_bpb = estimate_loss(
                 model, token_emb, sigreg, val_arr, C.BLOCK_SIZE, C.BATCH_SIZE, C.EVAL_ITERS, device, C.USE_AMP
             )
             logger.log_line(
-                f"[eval] step {step} | val_total {val_total:.6f} | val_cosine {val_cosine:.6f} | val_sigreg {val_sigreg_loss:.6f} | val_xent {val_xent_nats:.6f} | val_bpb {val_bpb:.6f}"
+                f"[eval] step {step} | val_total {val_total:.6f} | val_mse {val_mse:.6f} | val_cosine {val_cosine:.6f} | val_sigreg {val_sigreg_loss:.6f} | val_xent {val_xent_nats:.6f} | val_bpb {val_bpb:.6f}"
             )
             logger.log_metric(
                 step,
                 "val",
                 val_total,
+                val_mse,
                 val_cosine,
                 val_sigreg_loss,
                 val_sigreg_raw,
                 val_xent_nats,
                 val_bpb,
+                float("nan"),
+                float("nan"),
+                float("nan"),
+                float("nan"),
+                float("nan"),
                 lr,
                 0.0,
             )
@@ -423,6 +540,7 @@ def main():
                 "scaler": scaler.state_dict() if C.USE_AMP else None,
                 "step": step,
                 "best_val_loss": best_val_loss,
+                "t_sampler_ema": t_sampler.ema.detach().cpu() if t_sampler is not None else None,
                 "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
             }
             save_checkpoint(ckpt_latest, payload)
@@ -442,6 +560,7 @@ def main():
                 "scaler": scaler.state_dict() if C.USE_AMP else None,
                 "step": step,
                 "best_val_loss": best_val_loss,
+                "t_sampler_ema": t_sampler.ema.detach().cpu() if t_sampler is not None else None,
                 "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
             }
             save_checkpoint(snap, payload)
@@ -456,6 +575,7 @@ def main():
         "scaler": scaler.state_dict() if C.USE_AMP else None,
         "step": step,
         "best_val_loss": best_val_loss,
+        "t_sampler_ema": t_sampler.ema.detach().cpu() if t_sampler is not None else None,
         "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
     }
     save_checkpoint(ckpt_latest, payload)
