@@ -153,6 +153,7 @@ def ddim_denoise_x0(
     t_end: float,
     steps: int,
     use_amp: bool,
+    step_noise: float = 0.0,
 ) -> torch.Tensor:
     # Deterministic DDIM-style update where model predicts x0.
     # xt: [B,S,D]
@@ -179,6 +180,8 @@ def ddim_denoise_x0(
 
         eps_hat = (x - a * x0_hat) / (s + 1e-8)
         x = a_next * x0_hat + s_next * eps_hat
+        if step_noise:
+            x = x + (float(step_noise) * s_next) * torch.randn_like(x)
 
     return x
 
@@ -230,6 +233,7 @@ def ddim_denoise_x0_with_mse_curve(
     t_end: float,
     steps: int,
     use_amp: bool,
+    step_noise: float = 0.0,
 ) -> tuple[torch.Tensor, list[float]]:
     if steps < 2:
         raise ValueError("steps must be >= 2")
@@ -257,6 +261,8 @@ def ddim_denoise_x0_with_mse_curve(
 
         eps_hat = (x - a * x0_hat) / (s + 1e-8)
         x = a_next * x0_hat + s_next * eps_hat
+        if step_noise:
+            x = x + (float(step_noise) * s_next) * torch.randn_like(x)
 
     return x, mse_curve
 
@@ -363,6 +369,7 @@ def main():
     ap.add_argument("--decode-tau", type=float, default=None, help="Overrides config DECODE_TAU for sampling decode.")
     ap.add_argument("--denoise-steps", type=int, default=64)
     ap.add_argument("--denoise-t-noise", type=float, default=1.0, help="(reconstruct-demo) noise level used to create xt from x0.")
+    ap.add_argument("--step-noise", type=float, default=0.0, help="Extra Gaussian noise injected each denoise step (scaled by sigma(t)).")
     ap.add_argument("--print-bytes", type=int, default=256)
     ap.add_argument(
         "--reconstruct-mse-png",
@@ -435,6 +442,7 @@ def main():
                 t_end=0.0,
                 steps=int(args.denoise_steps),
                 use_amp=use_amp,
+                step_noise=float(args.step_noise),
             )
             pred_tokens = (
                 decode_tokens_cosine_sample(x_hat, token_emb.weight, tau=tau_decode)
@@ -443,7 +451,7 @@ def main():
             )
 
         print(
-            f"steps={args.denoise_steps} | decode={args.decode} tau={tau_decode}"
+            f"steps={args.denoise_steps} | step_noise={args.step_noise:g} | decode={args.decode} tau={tau_decode}"
         )
         print("pred: " + _bytes_preview(pred_tokens[0].cpu(), limit=args.print_bytes))
         print()
@@ -467,6 +475,7 @@ def main():
                 t_end=0.0,
                 steps=int(args.denoise_steps),
                 use_amp=use_amp,
+                step_noise=float(args.step_noise),
             )
             pred_tokens = (
                 decode_tokens_cosine_sample(x_hat, token_emb.weight, tau=tau_decode)
@@ -476,7 +485,7 @@ def main():
             acc = (pred_tokens == tokens).float().mean().item()
 
         print(
-            f"steps={args.denoise_steps} t_noise={args.denoise_t_noise} | decode={args.decode} tau={tau_decode} | token_acc={acc*100:.2f}%"
+            f"steps={args.denoise_steps} t_noise={args.denoise_t_noise} | step_noise={args.step_noise:g} | decode={args.decode} tau={tau_decode} | token_acc={acc*100:.2f}%"
         )
         print("gt : " + _bytes_preview(tokens[0].cpu(), limit=args.print_bytes))
         print("pred: " + _bytes_preview(pred_tokens[0].cpu(), limit=args.print_bytes))
