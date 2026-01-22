@@ -161,7 +161,7 @@ class ZeroSigReg(nn.Module):
         return proj.new_zeros(())
 
 
-def cosine_sigreg_loss(
+def mse_sigreg_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
     *,
@@ -174,15 +174,7 @@ def cosine_sigreg_loss(
     return cosine_loss + float(sigreg_weight) * sigreg(pred.float())
 
 
-def mse_sigreg_loss(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-    *,
-    sigreg: nn.Module = ZeroSigReg(),
-    sigreg_weight: float = 0.0,
-) -> torch.Tensor:
-    mse_loss = F.mse_loss(pred, target)
-    return mse_loss + float(sigreg_weight) * sigreg(pred.float())
+cosine_sigreg_loss = mse_sigreg_loss
 
 
 if __name__ == "__main__":
