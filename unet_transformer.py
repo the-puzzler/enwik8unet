@@ -117,7 +117,7 @@ class TransformerBlock(nn.Module):
         return x
 
 class Downsample(nn.Module):
-    """Downsample by averaging windows of tokens"""
+    """Downsample by taking first of windows of tokens"""
     def __init__(self, window_size):
         super().__init__()
         self.window_size = window_size

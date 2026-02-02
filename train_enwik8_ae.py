@@ -1,36 +1,34 @@
-# train_enwik8.py
 import os
+import json
 import math
 import time
-import json
 import random
-import numpy as np
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import config as C
-from unet_transformer import UNetTransformer
-from baseline_transformer import BaselineTransformer  # for base
-
+from unet_autoencoder import UNetAutoEncoder
+import config_ae as C
 
 LN2 = math.log(2.0)
 
-# -----------------------------
-# Utils
-# -----------------------------
+
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
+
 def now_str():
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
 
 def human_num(n: float) -> str:
     for unit in ["", "K", "M", "B", "T"]:
@@ -39,14 +37,17 @@ def human_num(n: float) -> str:
         n /= 1000
     return f"{n:,.2f}P"
 
+
 def save_checkpoint(path, payload: dict):
     ensure_dir(os.path.dirname(path))
     tmp = path + ".tmp"
     torch.save(payload, tmp)
     os.replace(tmp, path)
 
+
 def load_checkpoint(path, map_location="cpu"):
     return torch.load(path, map_location=map_location)
+
 
 def product(xs):
     p = 1
@@ -54,13 +55,7 @@ def product(xs):
         p *= int(x)
     return p
 
-def _unwrap_model(m):
-    """Return the underlying nn.Module (handles torch.compile wrapping)."""
-    return getattr(m, "_orig_mod", m)
 
-# -----------------------------
-# Data
-# -----------------------------
 def load_enwik8_memmap(data_path: str) -> np.memmap:
     if not os.path.isfile(data_path):
         raise FileNotFoundError(
@@ -69,65 +64,23 @@ def load_enwik8_memmap(data_path: str) -> np.memmap:
         )
     return np.memmap(data_path, dtype=np.uint8, mode="r")
 
+
 def make_splits(data: np.memmap, train_frac=0.9, val_frac=0.05):
     n = len(data)
     n_train = int(n * train_frac)
     n_val = int(n * val_frac)
     train = data[:n_train]
-    val = data[n_train:n_train + n_val]
-    test = data[n_train + n_val:]
+    val = data[n_train : n_train + n_val]
+    test = data[n_train + n_val :]
     return train, val, test
 
-def get_causal_mask(seq_len: int, device: torch.device):
-    # shape [1, 1, S, S]; 1=allow, 0=block (matches your attention masked_fill(mask==0))
-    m = torch.tril(torch.ones((seq_len, seq_len), device=device, dtype=torch.uint8))
-    return m[None, None, :, :]
 
-def sample_batch(data_arr: np.ndarray, batch_size: int, block_size: int, device: torch.device):
-    max_start = len(data_arr) - (block_size + 1)
-    starts = np.random.randint(0, max_start, size=(batch_size,))
-    x = np.stack([data_arr[s:s+block_size].astype(np.int64) for s in starts], axis=0)
-    y = np.stack([data_arr[s+1:s+block_size+1].astype(np.int64) for s in starts], axis=0)
-    x = torch.from_numpy(x).to(device, non_blocking=True)
-    y = torch.from_numpy(y).to(device, non_blocking=True)
-    return x, y
-
-@torch.no_grad()
-def estimate_loss_and_bpb(model, data_arr, block_size, batch_size, eval_iters, device, mask, use_amp: bool):
-    model.eval()
-    losses = []
-    for _ in range(eval_iters):
-        x, y = sample_batch(data_arr, batch_size, block_size, device)
-        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            logits = model(x, mask=mask)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-        losses.append(loss.item())
-    mean_loss = float(np.mean(losses))     # nats
-    mean_bpb = mean_loss / LN2             # bits per byte (base-2)
-    model.train()
-    return mean_loss, mean_bpb
-
-# -----------------------------
-# LR schedule
-# -----------------------------
-def get_lr(step: int):
-    if step < C.WARMUP_STEPS:
-        return C.LR * step / max(1, C.WARMUP_STEPS)
-    # cosine decay to MIN_LR
-    t = (step - C.WARMUP_STEPS) / max(1, C.MAX_STEPS - C.WARMUP_STEPS)
-    t = min(max(t, 0.0), 1.0)
-    return C.MIN_LR + 0.5 * (C.LR - C.MIN_LR) * (1.0 + math.cos(math.pi * t))
-
-# -----------------------------
-# Logging
-# -----------------------------
 class TextLogger:
     def __init__(self, work_dir: str):
         ensure_dir(work_dir)
         self.log_path = os.path.join(work_dir, "train.log")
         self.csv_path = os.path.join(work_dir, "metrics.csv")
 
-        # Write headers if new
         if not os.path.isfile(self.csv_path):
             with open(self.csv_path, "w", encoding="utf-8") as f:
                 f.write("time,step,split,loss_nats,bpb,lr,tok_per_sec\n")
@@ -141,6 +94,37 @@ class TextLogger:
     def log_metric(self, step: int, split: str, loss_nats: float, bpb: float, lr: float, tok_per_sec: float):
         with open(self.csv_path, "a", encoding="utf-8") as f:
             f.write(f"{now_str()},{step},{split},{loss_nats:.6f},{bpb:.6f},{lr:.8e},{tok_per_sec:.2f}\n")
+
+
+def sample_batch(data_arr: np.ndarray, batch_size: int, block_size: int, device: torch.device):
+    max_start = len(data_arr) - (block_size)
+    starts = np.random.randint(0, max_start, size=(batch_size,))
+    x = np.stack([data_arr[s:s+block_size].astype(np.int64) for s in starts], axis=0)
+    x = torch.from_numpy(x).to(device, non_blocking=True)
+    return x
+
+@torch.no_grad()
+def estimate_loss_and_bpb(model, data_arr, block_size, batch_size, eval_iters, device, mask, use_amp: bool):
+    model.eval()
+    losses = []
+    for _ in range(eval_iters):
+        x = sample_batch(data_arr, batch_size, block_size, device)
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+            logits = model(x, mask=mask)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), x.view(-1))
+        losses.append(loss.item())
+    mean_loss = float(np.mean(losses))     # nats
+    mean_bpb = mean_loss / LN2             # bits per byte (base-2)
+    model.train()
+    return mean_loss, mean_bpb
+
+def get_lr(step: int):
+    if step < C.WARMUP_STEPS:
+        return C.LR * step / max(1, C.WARMUP_STEPS)
+    # cosine decay to MIN_LR
+    t = (step - C.WARMUP_STEPS) / max(1, C.MAX_STEPS - C.WARMUP_STEPS)
+    t = min(max(t, 0.0), 1.0)
+    return C.MIN_LR + 0.5 * (C.LR - C.MIN_LR) * (1.0 + math.cos(math.pi * t))
 
 # -----------------------------
 # Main
@@ -179,27 +163,24 @@ logger.log_line(
 )
 
 # Model
-# model = UNetTransformer(
-#     vocab_size=C.VOCAB_SIZE,
-#     dim=C.DIM,
-#     num_heads=C.NUM_HEADS,
-#     mlp_ratio=C.MLP_RATIO,
-#     dropout=C.DROPOUT,
-#     window_sizes=C.WINDOW_SIZES,
-# ).to(device)
-
-
-model = BaselineTransformer(
+raw_model = UNetAutoEncoder(
     vocab_size=C.VOCAB_SIZE,
     dim=C.DIM,
     num_heads=C.NUM_HEADS,
     mlp_ratio=C.MLP_RATIO,
     dropout=C.DROPOUT,
-    num_layers=C.NUM_LAYERS, 
+    window_sizes=C.WINDOW_SIZES,
+    num_codes=getattr(C, "NUM_CODES", 0),
 ).to(device)
 
-n_params = sum(p.numel() for p in model.parameters())
+
+
+n_params = sum(p.numel() for p in raw_model.parameters())
 logger.log_line(f"Model params: {n_params:,}")
+
+# Optionally compile for faster training. Keep a handle to the uncompiled module
+# so checkpoint state_dict keys remain stable across compiled/uncompiled runs.
+model = torch.compile(raw_model) if C.USE_COMPILE else raw_model
 
 # Ckpt paths
 ckpt_latest = os.path.join(C.WORK_DIR, "ckpt_latest.pt")
@@ -218,13 +199,18 @@ else:
     logger.log_line("No ckpt_latest found; starting fresh.")
 
 if ckpt is not None and "model" in ckpt:
-    model.load_state_dict(ckpt["model"])
-if C.USE_COMPILE:
-    model = torch.compile(model)
+    sd = ckpt["model"]
+    # Backward compatibility: checkpoints saved from torch.compile may prefix keys with "_orig_mod."
+    if isinstance(sd, dict) and any(k.startswith("_orig_mod.") for k in sd.keys()):
+        sd = {k[len("_orig_mod.") :]: v for k, v in sd.items()}
+    # Backward compatibility: DataParallel prefixes keys with "module."
+    if isinstance(sd, dict) and any(k.startswith("module.") for k in sd.keys()):
+        sd = {k[len("module.") :]: v for k, v in sd.items()}
+    raw_model.load_state_dict(sd)
 
 # Optim
 optimizer = torch.optim.AdamW(
-    model.parameters(),
+    raw_model.parameters(),
     lr=C.LR,
     betas=C.BETAS,
     weight_decay=C.WEIGHT_DECAY,
@@ -236,8 +222,6 @@ if ckpt is not None:
     if C.USE_AMP and ckpt.get("scaler") is not None:
         scaler.load_state_dict(ckpt["scaler"])
 
-# Fixed causal mask (BLOCK_SIZE fixed)
-causal_mask = get_causal_mask(C.BLOCK_SIZE, device)
 
 model.train()
 t0 = time.time()
@@ -256,11 +240,11 @@ while step < C.MAX_STEPS:
     accum_loss = 0.0
 
     for micro in range(C.GRAD_ACCUM):
-        x, y = sample_batch(train_arr, C.BATCH_SIZE, C.BLOCK_SIZE, device)
+        x= sample_batch(train_arr, C.BATCH_SIZE, C.BLOCK_SIZE, device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=C.USE_AMP):
-            logits = model(x, mask=causal_mask)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+            logits = model(x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), x.view(-1))   
             loss = loss / C.GRAD_ACCUM
 
         scaler.scale(loss).backward()
@@ -293,7 +277,7 @@ while step < C.MAX_STEPS:
     # Eval
     if step > 0 and step % C.EVAL_INTERVAL == 0:
         val_loss, val_bpb = estimate_loss_and_bpb(
-            model, val_arr, C.BLOCK_SIZE, C.BATCH_SIZE, C.EVAL_ITERS, device, causal_mask, C.USE_AMP
+            model, val_arr, C.BLOCK_SIZE, C.BATCH_SIZE, C.EVAL_ITERS, device, None, C.USE_AMP
         )
         logger.log_line(f"[eval] step {step} | val_loss(nats) {val_loss:.4f} | val_bpb {val_bpb:.4f}")
         logger.log_metric(step, "val", val_loss, val_bpb, lr, 0.0)
@@ -302,7 +286,7 @@ while step < C.MAX_STEPS:
         if val_bpb < best_val_bpb:
             best_val_bpb = val_bpb
             payload = {
-                "model": model.state_dict(),
+                "model": raw_model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "scaler": scaler.state_dict() if C.USE_AMP else None,
                 "step": step,
@@ -315,7 +299,7 @@ while step < C.MAX_STEPS:
     # Save latest
     if step > 0 and step % C.CKPT_INTERVAL == 0:
         payload = {
-            "model": model.state_dict(),
+            "model": raw_model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scaler": scaler.state_dict() if C.USE_AMP else None,
             "step": step,
@@ -329,7 +313,7 @@ while step < C.MAX_STEPS:
     if C.CKPT_SNAPSHOT_INTERVAL and C.CKPT_SNAPSHOT_INTERVAL > 0 and step > 0 and step % C.CKPT_SNAPSHOT_INTERVAL == 0:
         snap = os.path.join(C.WORK_DIR, f"ckpt_step_{step:06d}.pt")
         payload = {
-            "model": model.state_dict(),
+            "model": raw_model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scaler": scaler.state_dict() if C.USE_AMP else None,
             "step": step,
@@ -343,7 +327,7 @@ while step < C.MAX_STEPS:
 
 # Final save
 payload = {
-    "model": model.state_dict(),
+    "model": raw_model.state_dict(),
     "optimizer": optimizer.state_dict(),
     "scaler": scaler.state_dict() if C.USE_AMP else None,
     "step": step,
@@ -352,4 +336,3 @@ payload = {
 }
 save_checkpoint(ckpt_latest, payload)
 logger.log_line(f"Training done. Final ckpt: {ckpt_latest}")
-
