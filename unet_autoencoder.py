@@ -99,11 +99,21 @@ class UNetAutoEncoder(nn.Module):
         # Token embeddings
         x = self.token_emb(x)
         x = self.dropout(x)
-  
+
+        target_lens = []
+        used_levels = 0
+
         for encoder_block, downsample in zip(self.encoder_blocks, self.downsample_layers):
             x = encoder_block(x, mask)
-            
+            cur_len = x.size(1)
+            if cur_len <= 2:
+                break
+            next_len = (cur_len + int(downsample.window_size) - 1) // int(downsample.window_size)
+            if next_len < 2:
+                break
+            target_lens.append(cur_len)
             x = downsample(x)
+            used_levels += 1
         
         # Bottleneck
         if self.codebook is not None:
@@ -112,12 +122,16 @@ class UNetAutoEncoder(nn.Module):
             x = self.bottleneck(x, mask)
         
         # Decoder path with skip connections
-        for upsample, decoder_block in zip(
-            self.upsample_layers, 
-            self.decoder_blocks, 
-        ):
-            x = upsample(x)
-            x = decoder_block(x, mask)
+        if used_levels > 0:
+            up_layers = self.upsample_layers[-used_levels:]
+            dec_layers = self.decoder_blocks[-used_levels:]
+            for upsample, decoder_block, target_len in zip(
+                up_layers,
+                dec_layers,
+                reversed(target_lens),
+            ):
+                x = upsample(x, target_len=target_len)
+                x = decoder_block(x, mask)
         
         # Output
         x = self.norm(x)

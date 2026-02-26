@@ -117,39 +117,46 @@ class TransformerBlock(nn.Module):
         return x
 
 class Downsample(nn.Module):
-    """Downsample by taking first of windows of tokens"""
+    """Downsample by taking first of windows of tokens (ceil-window, ragged-safe)."""
     def __init__(self, window_size):
         super().__init__()
         self.window_size = window_size
     
     def forward(self, x):
         # x: [batch, seq_len, dim]
-        batch_size, seq_len, dim = x.shape
-        assert seq_len % self.window_size == 0, f"Seq len {seq_len} must be divisible by window size {self.window_size}"
-        
-        # Reshape to [batch, num_windows, window_size, dim] and keep earliest token in each window to stay causal
-        x = x.view(batch_size, seq_len // self.window_size, self.window_size, dim)
-        x = x[:, :, 0, :]
-        
-        return x
+        _, seq_len, _ = x.shape
+        w = int(self.window_size)
+        idx = torch.arange(0, seq_len, w, device=x.device)
+        return x.index_select(1, idx)
 
 class Upsample(nn.Module):
-    """Upsample by learned expansion - each token generates multiple tokens"""
+    """Upsample by learned expansion or interpolation to a target length."""
     def __init__(self, dim, expansion_factor):
         super().__init__()
         self.expansion_factor = expansion_factor
-        # Project to expansion_factor * dim, then reshape
-        self.proj = nn.Linear(dim, expansion_factor * dim, bias=False)
+        # Separate projections for expansion vs interpolation modes.
+        self.proj_expand = nn.Linear(dim, expansion_factor * dim, bias=False)
+        self.proj = nn.Linear(dim, dim, bias=False)
     
-    def forward(self, x):
+    def forward(self, x, target_len=None):
         # x: [batch, seq_len, dim]
         batch_size, seq_len, dim = x.shape
-        
-        # Project and reshape to expand
-        x = self.proj(x)  # [batch, seq_len, expansion_factor * dim]
-        x = x.view(batch_size, seq_len * self.expansion_factor, dim)
-        
-        return x
+        if target_len is None:
+            # Project and reshape to expand
+            x = self.proj_expand(x)  # [batch, seq_len, expansion_factor * dim]
+            x = x.view(batch_size, seq_len * self.expansion_factor, dim)
+            return x
+
+        target_len = int(target_len)
+        if target_len <= 0:
+            raise ValueError("target_len must be > 0")
+        if seq_len == target_len:
+            return self.proj(x)
+
+        xt = x.transpose(1, 2)  # [B, D, S]
+        xt = F.interpolate(xt, size=target_len, mode="linear", align_corners=False)
+        y = xt.transpose(1, 2)  # [B, target_len, D]
+        return self.proj(y)
 
 class UNetTransformer(nn.Module):
     """U-Net style transformer with hierarchical token processing"""
@@ -228,7 +235,7 @@ class UNetTransformer(nn.Module):
             self.decoder_blocks, 
             reversed(skip_connections)
         ):
-            x = upsample(x)
+            x = upsample(x, target_len=skip.size(1))
             x = x + skip  # Add skip connection (residual style)
             x = decoder_block(x, mask)
         

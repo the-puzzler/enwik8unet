@@ -1,0 +1,188 @@
+# Variable-length UNet AutoEncoder changes (Option A: keep-first)
+
+This document summarizes the architectural + training changes to make the UNetAutoEncoder handle **variable-length** sequences without filling/padding to a fixed `BLOCK_SIZE`.
+
+You selected:
+
+* **Downsample: Option A (keep-first) with ceil windows**
+* **Upsample: interpolation/resampling to exact target length**
+* **Constraint: main bottleneck target is 2 latent tokens** (`target_latent_len = 2`)
+
+---
+
+## Why changes are needed
+
+Your current model has two hard assumptions:
+
+1. **Downsample requires divisibility** (`seq_len % window_size == 0`) due to `view(..., window_size, ...)`.
+2. **Upsample always expands by a fixed factor** (`seq_len -> seq_len * window_size`).
+
+Together, this forces inputs to have lengths compatible with the full product of window sizes (often equals `BLOCK_SIZE`), and makes “short strings” require artificial fill.
+
+The changes below remove both constraints and make “any length in → same length out” possible.
+
+---
+
+## Architectural changes
+
+### Change 1 — Downsample: **ceil windows** (Option A: keep-first)
+
+**Goal:** accept any input length `S`, create `ceil(S / w)` windows of size `w` (last may be partial), and keep the first token of each window.
+
+**Replace** the current `Downsample.forward()` with:
+
+```python
+class Downsample(nn.Module):
+    """Ragged-safe downsample using ceil windows; keeps the first token in each window."""
+    def __init__(self, window_size: int):
+        super().__init__()
+        self.window_size = int(window_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, S, D]
+        B, S, D = x.shape
+        w = self.window_size
+        # indices 0, w, 2w, ... (covers partial final window)
+        idx = torch.arange(0, S, w, device=x.device)
+        return x.index_select(1, idx)  # [B, ceil(S/w), D]
+```
+
+Notes:
+
+* No asserts.
+* This preserves the original inductive bias (“earliest token per window”) while becoming ragged-safe.
+
+---
+
+### Change 2 — Upsample: **interpolate to a target length**
+
+**Goal:** produce exactly `target_len` tokens during decode (rather than `S*w`).
+
+**Replace** `Upsample.forward()` with a target-length resampler:
+
+```python
+import torch.nn.functional as F
+
+class Upsample(nn.Module):
+    """Ragged-safe upsample by interpolation to target length."""
+    def __init__(self, dim: int, expansion_factor: int):
+        super().__init__()
+        self.expansion_factor = int(expansion_factor)  # kept for symmetry/logging
+        self.proj = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, x: torch.Tensor, target_len: int) -> torch.Tensor:
+        # x: [B, S, D] -> [B, target_len, D]
+        B, S, D = x.shape
+        if target_len <= 0:
+            raise ValueError("target_len must be > 0")
+        if S == target_len:
+            return self.proj(x)
+
+        xt = x.transpose(1, 2)  # [B, D, S]
+        xt = F.interpolate(xt, size=target_len, mode="linear", align_corners=False)
+        y = xt.transpose(1, 2)  # [B, target_len, D]
+        return self.proj(y)
+```
+
+Notes:
+
+* This is what makes the model truly variable-length on the **decoder** side.
+* Decoder no longer needs external truncation hacks.
+
+---
+
+### Change 3 — Forward pass: record lengths + target bottleneck length = 2
+
+To decode back to the correct length, the decoder needs to know the intended lengths at each scale.
+
+**Protocol:**
+
+* During encode, record the sequence length after each downsample.
+* Stop downsampling once you hit the **target bottleneck length of 2**.
+* For very short inputs (length = 1), allow bottleneck length to be 1 (no padding).
+* During decode, upsample back using those recorded lengths in reverse.
+
+#### Helper: ceil division
+
+```python
+def ceil_div(a: int, b: int) -> int:
+    return (a + b - 1) // b
+```
+
+---
+
+## Training changes (recommended)
+
+### Can you keep training only on full windows (e.g., `BLOCK_SIZE=1024`)?
+
+**Yes, mechanically.** Training will run and converge.
+
+### Will the model work well on arbitrary lengths if you only train on full windows?
+
+Often **not**. The new operators (ceil windows + interpolation) introduce regimes the model will never see if you only train on fixed 1024 lengths:
+
+* partial windows at boundaries
+* fewer encoder/decoder levels used for short lengths
+* different latent lengths due to `min_latent_len=2` stop rule
+
+### Minimal training tweaks with big payoff
+
+#### 1) Mix in variable lengths
+
+Instead of always sampling length 1024, sample a length per batch (simplest):
+
+* Example set: `{64, 128, 256, 512, 1024}`
+* Or random uniform / log-uniform in `[64, 1024]`
+
+#### 2) Include ragged lengths explicitly
+
+Make sure some batches use lengths not divisible by window sizes, e.g. `997, 1000, 513`.
+This teaches the model what to do on partial/ceil windows.
+
+#### 3) Keep some full-length batches
+
+You can keep a large fraction at 1024 to preserve the original training regime.
+A practical split:
+
+* 50% batches at 1024
+* 50% batches variable-length (including ragged)
+
+#### 4) Masking (optional, but recommended if batching mixed lengths)
+
+If you want mixed lengths within a batch:
+
+* pad sequences to max length in batch
+* use an attention mask so padding does not affect real tokens
+
+If you choose “single-length-per-batch”, you can avoid padding/masks initially.
+
+---
+
+## Implementation checklist
+
+### Core architecture
+
+* [ ] Replace `Downsample` with ceil-window keep-first version (no assert).
+* [ ] Replace `Upsample` with interpolation-to-target-length version.
+* [ ] Update `UNetAutoEncoder.forward` to:
+
+  * [ ] record lengths per scale (`lens`)
+  * [ ] stop before latent length < 2
+  * [ ] decode using mirrored lengths
+
+### Training
+
+* [ ] Add variable-length sampling (single-length-per-batch easiest).
+* [ ] Include ragged lengths.
+* [ ] Keep some batches at full `BLOCK_SIZE`.
+* [ ] (Optional) implement attention masks if batching mixed lengths.
+
+---
+
+## Expected behavior after changes
+
+* Any input length `S >= 1` can run end-to-end (length 1 is the only exception to the size-2 bottleneck target).
+* Output length matches input length by construction.
+* Latent length will vary with input length; for `S >= 2` it bottoms out at **2**.
+* Reconstruction of very short inputs should improve vs “fill-to-1024”, because you avoid injecting artificial context.
+* For best quality across lengths, incorporate variable-length training.
