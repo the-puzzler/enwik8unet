@@ -4,6 +4,14 @@ This repo explores a simple UNet-style autoregressive language model on **enwik8
 
 The goal was not to build a complex tokenizer-inside-the-model system, but to test whether a **fixed, simple hierarchical compression/expansion pattern** can keep quality close to a standard Transformer while reducing compute and memory.
 
+<p align="center">
+  <img src="umap.png" alt="UNet bottleneck UMAP" width="48%" />
+  <img src="word_cloud.png" alt="UNet bottleneck word clouds" width="48%" />
+</p>
+<p align="center"><em>
+Left: 2D UMAP of bottleneck embeddings from random test spans. Right: cluster-enriched word clouds from those same bottleneck clusters.
+</em></p>
+
 ## Motivation
 
 The core idea is to introduce a contracting-expanding pathway in a causal language model:
@@ -50,20 +58,20 @@ Architecture schematic:
 
 ## Curves
 
-Baseline training curve:
-
-![Baseline Metrics](metrics_plot.png)
-
-UNet training curve:
-
-![UNet Metrics](metrics_plot_unet.png)
+<p align="center">
+  <img src="metrics_plot.png" alt="Baseline training metrics" width="48%" />
+  <img src="metrics_plot_unet.png" alt="UNet training metrics" width="48%" />
+</p>
+<p align="center"><em>
+Left: baseline Transformer metrics. Right: simple UNet metrics.
+</em></p>
 
 ## Results
 
 - Final test bpb (baseline): **1.19**
 - Final test bpb (UNet): **1.20**
 
-The key outcome is that both models plateau in nearly the same region. The dense baseline is slightly ahead in the recorded run, and the UNet might plausibly recover only a very small margin with longer training (roughly a few hundredths, e.g. ~0.03-0.04 bpb at most), but the curves suggest no large late-stage separation.
+The key outcome is that both models plateau in nearly the same region. The dense baseline is slightly ahead in the recorded run, and if training were extended, the most likely change is that baseline lead grows only slightly (roughly a few hundredths, e.g. ~0.03-0.04 bpb at most), not a large late-stage separation.
 
 So the main result is:
 
@@ -77,6 +85,14 @@ The UNet bottleneck behaved like a meaningful latent space in downstream analysi
 - Random test spans were embedded at the bottleneck.
 - UMAP + HDBSCAN revealed coherent topical clusters.
 - Cluster-level term enrichment and word clouds showed interpretable themes (for example, technical/security-heavy spans, historical conflict clusters, citation/link-heavy text neighborhoods, and generic prose background clusters).
+
+More concretely, several clusters were especially distinctive:
+
+- One cluster was anchored by I Ching terminology (for example: "hexagram", "ching", "wilhelm"), suggesting a coherent niche topic.
+- Another grouped intelligence/security-agency language (for example: "mukhabarat", "directorate", "agency", "security").
+- A separate cluster concentrated Balkans war-crimes terms (for example: "srebrenica", "srpska", "indicted", "sentenced"), indicating a strong geopolitical/human-rights theme.
+- Another appeared to capture citation/external-links neighborhoods, including outlet-like tokens and reference-heavy text structure.
+- Larger background clusters were dominated by common function words and read more like generic prose rather than a single topic.
 
 This indicates the compressed representation is not only computationally useful, but also semantically structured.
 
