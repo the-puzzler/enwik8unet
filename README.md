@@ -31,6 +31,10 @@ This gives a UNet-style compute pattern where much of the expensive processing h
 - Learned upsampling via projection + reshape
 - UNet skip connections across matching scales
 
+Architecture schematic:
+
+![UNet Architecture](arch.png)
+
 ### Practical comparison (approx)
 
 - Params: baseline ~42M, UNet ~43M
@@ -48,11 +52,11 @@ This gives a UNet-style compute pattern where much of the expensive processing h
 
 Baseline training curve:
 
-![Baseline Metrics](scripts/metrics_plot.png)
+![Baseline Metrics](metrics_plot.png)
 
 UNet training curve:
 
-![UNet Metrics](scripts/metrics_plot_unet.png)
+![UNet Metrics](metrics_plot_unet.png)
 
 ## Results
 
@@ -75,6 +79,14 @@ The UNet bottleneck behaved like a meaningful latent space in downstream analysi
 - Cluster-level term enrichment and word clouds showed interpretable themes (for example, technical/security-heavy spans, historical conflict clusters, citation/link-heavy text neighborhoods, and generic prose background clusters).
 
 This indicates the compressed representation is not only computationally useful, but also semantically structured.
+
+UMAP projection of bottleneck embeddings:
+
+![UNet Bottleneck UMAP](umap.png)
+
+Cluster-enriched word cloud view:
+
+![UNet Bottleneck Word Cloud](word_cloud.png)
 
 ## Takeaway
 
