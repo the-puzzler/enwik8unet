@@ -4,6 +4,14 @@ This repo explores a simple UNet-style autoregressive language model on **enwik8
 
 The goal was not to build a complex tokenizer-inside-the-model system, but to test whether a **fixed, simple hierarchical compression/expansion pattern** can keep quality close to a standard Transformer while reducing compute and memory.
 
+## Contents
+
+- [Motivation](#motivation)
+- [Model Design](#model-design)
+- [Curves](#curves)
+- [Results](#results)
+- [Quickstart](#quickstart)
+
 <p align="center">
   <img src="umap.png" alt="UNet bottleneck UMAP" width="48%" />
   <img src="word_cloud.png" alt="UNet bottleneck word clouds" width="48%" />
