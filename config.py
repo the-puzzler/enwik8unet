@@ -14,6 +14,7 @@ USE_AMP = True            # mixed precision
 USE_COMPILE = True        # torch.compile (PyTorch 2.x)
 
 # Model
+MODEL_TYPE = "unet"  # "baseline" or "unet"
 VOCAB_SIZE = 256          # byte-level
 DIM = 512
 NUM_HEADS = 8
@@ -45,5 +46,7 @@ CKPT_SNAPSHOT_INTERVAL = 10000 # also save runs/enwik8_unet/ckpt_step_XXXXXX.pt 
 
 
 #For baseline
-WORK_DIR = "runs/enwik8_baseline"
+#WORK_DIR = "runs/enwik8_baseline"
 NUM_LAYERS = 10
+# For UNet, typically use:
+WORK_DIR = "runs/enwik8_unet"

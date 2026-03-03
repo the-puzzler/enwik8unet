@@ -107,3 +107,58 @@ Cluster-enriched word cloud view:
 ## Takeaway
 
 A simple hierarchical UNet-style Transformer can stay competitive with a dense baseline on enwik8 while being much cheaper in estimated compute/memory. At this scale, it does not beat the baseline on bpb, but it demonstrates a strong quality-efficiency tradeoff and useful latent structure in the bottleneck.
+
+## Quickstart
+
+### 1) Install dependencies
+
+```bash
+uv sync
+```
+
+### 2) Download enwik8 data
+
+This project expects the raw file at `data/enwik8` (no extension).
+
+```bash
+mkdir -p data
+cd data
+wget http://mattmahoney.net/dc/enwik8.zip
+unzip -o enwik8.zip
+cd ..
+```
+
+### 3) Run training
+
+Model selection is controlled by `MODEL_TYPE` in [config.py](/mnt/mnemo9/mpelus/experiments/enwik8unet/config.py):
+
+- `MODEL_TYPE = "baseline"`
+- `MODEL_TYPE = "unet"`
+
+Also set `WORK_DIR` to the output folder you want for that run.
+
+Start training:
+
+```bash
+uv run python train_enwik8.py
+```
+
+### 4) Evaluate a trained checkpoint
+
+Baseline:
+
+```bash
+uv run python scripts/eval_test_bpb.py \
+  --work-dir runs/enwik8_baseline \
+  --ckpt ckpt_best.pt \
+  --model baseline
+```
+
+UNet:
+
+```bash
+uv run python scripts/eval_test_bpb.py \
+  --work-dir runs/enwik8_unet \
+  --ckpt ckpt_best.pt \
+  --model unet
+```

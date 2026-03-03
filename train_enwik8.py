@@ -153,11 +153,15 @@ if C.DEVICE != "cuda" or not torch.cuda.is_available():
     raise RuntimeError("CUDA not available (or config DEVICE != 'cuda').")
 
 device = torch.device("cuda")
+model_type = str(getattr(C, "MODEL_TYPE", "baseline")).lower()
+if model_type not in ("baseline", "unet"):
+    raise ValueError(f"MODEL_TYPE must be 'baseline' or 'unet', got: {model_type}")
 
-# Validate block size constraints for your architecture
-ws_prod = product(C.WINDOW_SIZES)
-if C.BLOCK_SIZE % ws_prod != 0:
-    raise ValueError(f"BLOCK_SIZE={C.BLOCK_SIZE} must be divisible by product(WINDOW_SIZES)={ws_prod}.")
+# Validate block size constraints for UNet architecture
+if model_type == "unet":
+    ws_prod = product(C.WINDOW_SIZES)
+    if C.BLOCK_SIZE % ws_prod != 0:
+        raise ValueError(f"BLOCK_SIZE={C.BLOCK_SIZE} must be divisible by product(WINDOW_SIZES)={ws_prod}.")
 if C.BLOCK_SIZE > C.ROPE_MAX_SEQ_LEN:
     raise ValueError(
         f"BLOCK_SIZE={C.BLOCK_SIZE} exceeds ROPE_MAX_SEQ_LEN={C.ROPE_MAX_SEQ_LEN}.\n"
@@ -177,26 +181,27 @@ train_arr, val_arr, test_arr = make_splits(data, train_frac=0.9, val_frac=0.05)
 logger.log_line(
     f"Loaded enwik8 bytes: {len(data):,} | train {len(train_arr):,} | val {len(val_arr):,} | test {len(test_arr):,}"
 )
+logger.log_line(f"Model type: {model_type}")
 
 # Model
-# model = UNetTransformer(
-#     vocab_size=C.VOCAB_SIZE,
-#     dim=C.DIM,
-#     num_heads=C.NUM_HEADS,
-#     mlp_ratio=C.MLP_RATIO,
-#     dropout=C.DROPOUT,
-#     window_sizes=C.WINDOW_SIZES,
-# ).to(device)
-
-
-model = BaselineTransformer(
-    vocab_size=C.VOCAB_SIZE,
-    dim=C.DIM,
-    num_heads=C.NUM_HEADS,
-    mlp_ratio=C.MLP_RATIO,
-    dropout=C.DROPOUT,
-    num_layers=C.NUM_LAYERS, 
-).to(device)
+if model_type == "unet":
+    model = UNetTransformer(
+        vocab_size=C.VOCAB_SIZE,
+        dim=C.DIM,
+        num_heads=C.NUM_HEADS,
+        mlp_ratio=C.MLP_RATIO,
+        dropout=C.DROPOUT,
+        window_sizes=C.WINDOW_SIZES,
+    ).to(device)
+else:
+    model = BaselineTransformer(
+        vocab_size=C.VOCAB_SIZE,
+        dim=C.DIM,
+        num_heads=C.NUM_HEADS,
+        mlp_ratio=C.MLP_RATIO,
+        dropout=C.DROPOUT,
+        num_layers=C.NUM_LAYERS, 
+    ).to(device)
 
 n_params = sum(p.numel() for p in model.parameters())
 logger.log_line(f"Model params: {n_params:,}")
@@ -352,4 +357,3 @@ payload = {
 }
 save_checkpoint(ckpt_latest, payload)
 logger.log_line(f"Training done. Final ckpt: {ckpt_latest}")
-
