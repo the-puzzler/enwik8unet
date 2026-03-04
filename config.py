@@ -21,6 +21,7 @@ NUM_HEADS = 8
 MLP_RATIO = 4.0
 DROPOUT = 0.1
 WINDOW_SIZES = [4, 4, 2, 2]  # block_size must be divisible by product(WINDOW_SIZES)
+UPSAMPLE_MODE = "interp"      # "interp" or "expand" (UNet only)
 ROPE_MAX_SEQ_LEN = 2048      # must be >= BLOCK_SIZE (matches your model default)
 
 # Training

@@ -192,6 +192,7 @@ if model_type == "unet":
         mlp_ratio=C.MLP_RATIO,
         dropout=C.DROPOUT,
         window_sizes=C.WINDOW_SIZES,
+        upsample_mode=getattr(C, "UPSAMPLE_MODE", "interp"),
     ).to(device)
 else:
     model = BaselineTransformer(
