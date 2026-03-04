@@ -69,7 +69,6 @@ def main():
             mlp_ratio=cfg_get("MLP_RATIO", C.MLP_RATIO),
             dropout=cfg_get("DROPOUT", C.DROPOUT),
             window_sizes=cfg_get("WINDOW_SIZES", C.WINDOW_SIZES),
-            upsample_mode=cfg_get("UPSAMPLE_MODE", getattr(C, "UPSAMPLE_MODE", "interp")),
         ).to(device)
     else:
         model = BaselineTransformer(

@@ -21,13 +21,12 @@ NUM_HEADS = 8
 MLP_RATIO = 4.0
 DROPOUT = 0.1
 WINDOW_SIZES = [4, 4, 2, 2]  # block_size must be divisible by product(WINDOW_SIZES)
-UPSAMPLE_MODE = "interp"      # "interp" or "expand" (UNet only)
 ROPE_MAX_SEQ_LEN = 2048      # must be >= BLOCK_SIZE (matches your model default)
 
 # Training
 BLOCK_SIZE = 1024
-BATCH_SIZE = 32 #16 < 64    #128 for unet
-GRAD_ACCUM = 8    #2 for unet
+BATCH_SIZE = 128 #16 < 64    #128 for unet
+GRAD_ACCUM = 2    #2 for unet, 8 baseline
 
 MAX_STEPS = 100_000
 WARMUP_STEPS = 2_000

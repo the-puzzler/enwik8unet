@@ -144,10 +144,6 @@ Model selection is controlled by `MODEL_TYPE` in [config.py](/mnt/mnemo9/mpelus/
 - `MODEL_TYPE = "unet"`
 
 Also set `WORK_DIR` to the output folder you want for that run.
-For UNet runs, upsampling behavior is controlled by `UPSAMPLE_MODE` in [config.py](/mnt/mnemo9/mpelus/experiments/enwik8unet/config.py):
-
-- `UPSAMPLE_MODE = "interp"` (linear interpolation + projection)
-- `UPSAMPLE_MODE = "expand"` (learned linear expansion + projection)
 
 Start training:
 
@@ -173,21 +169,4 @@ uv run python scripts/eval_test_bpb.py \
   --work-dir runs/enwik8_unet \
   --ckpt ckpt_best.pt \
   --model unet
-```
-
-### 5) Run a mini upsample ablation (fast)
-
-```bash
-uv run python scripts/ablate_upsample.py \
-  --device cuda \
-  --repeats 3 \
-  --steps 300 \
-  --eval-every 50 \
-  --eval-iters 20 \
-  --dim 256 \
-  --block-size 256 \
-  --batch-size 16 \
-  --grad-accum 2 \
-  --window-sizes 4 4 2 \
-  --out runs/ablate_upsample/results.json
 ```

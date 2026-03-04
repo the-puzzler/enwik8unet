@@ -130,14 +130,10 @@ class Downsample(nn.Module):
         return x.index_select(1, idx)
 
 class Upsample(nn.Module):
-    """Upsample by learned expansion or interpolation to a target length."""
-    def __init__(self, dim, expansion_factor, mode="interp"):
+    """Upsample by learned expansion to a target length."""
+    def __init__(self, dim, expansion_factor):
         super().__init__()
-        if mode not in ("interp", "expand"):
-            raise ValueError(f"Unsupported upsample mode: {mode}")
         self.expansion_factor = expansion_factor
-        self.mode = mode
-        # Separate projections for expansion vs interpolation modes.
         self.proj_expand = nn.Linear(dim, expansion_factor * dim, bias=False)
         self.proj = nn.Linear(dim, dim, bias=False)
     
@@ -156,26 +152,20 @@ class Upsample(nn.Module):
         if seq_len == target_len:
             return self.proj(x)
 
-        if self.mode == "expand":
-            y = self.proj_expand(x).view(batch_size, seq_len * self.expansion_factor, dim)
-            cur_len = y.size(1)
-            if cur_len < target_len:
-                # Ragged-safe fallback: repeat last token to reach exact target_len.
-                pad = y[:, -1:, :].expand(batch_size, target_len - cur_len, dim)
-                y = torch.cat([y, pad], dim=1)
-            elif cur_len > target_len:
-                y = y[:, :target_len, :]
-            return self.proj(y)
-
-        xt = x.transpose(1, 2)  # [B, D, S]
-        xt = F.interpolate(xt, size=target_len, mode="linear", align_corners=False)
-        y = xt.transpose(1, 2)  # [B, target_len, D]
+        y = self.proj_expand(x).view(batch_size, seq_len * self.expansion_factor, dim)
+        cur_len = y.size(1)
+        if cur_len < target_len:
+            # Ragged-safe fallback: repeat last token to reach exact target_len.
+            pad = y[:, -1:, :].expand(batch_size, target_len - cur_len, dim)
+            y = torch.cat([y, pad], dim=1)
+        elif cur_len > target_len:
+            y = y[:, :target_len, :]
         return self.proj(y)
 
 class UNetTransformer(nn.Module):
     """U-Net style transformer with hierarchical token processing"""
     def __init__(self, vocab_size, dim=512, num_heads=8, mlp_ratio=4, 
-                 dropout=0.1, window_sizes=[2, 2, 2, 2], upsample_mode="interp"):
+                 dropout=0.1, window_sizes=[2, 2, 2, 2]):
         """
         Args:
             vocab_size: Size of vocabulary
@@ -191,7 +181,6 @@ class UNetTransformer(nn.Module):
         self.dim = dim
         self.window_sizes = window_sizes
         self.num_levels = len(window_sizes)
-        self.upsample_mode = upsample_mode
         
         # Input embedding
         self.token_emb = nn.Embedding(vocab_size, dim)
@@ -215,7 +204,7 @@ class UNetTransformer(nn.Module):
         self.decoder_blocks = nn.ModuleList()
         
         for i, window_size in enumerate(reversed(window_sizes)):
-            self.upsample_layers.append(Upsample(dim, window_size, mode=upsample_mode))
+            self.upsample_layers.append(Upsample(dim, window_size))
             self.decoder_blocks.append(
                 TransformerBlock(dim, num_heads, mlp_ratio, dropout)
             )
