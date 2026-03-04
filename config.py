@@ -49,5 +49,5 @@ CKPT_SNAPSHOT_INTERVAL = 10000 # also save runs/enwik8_unet/ckpt_step_XXXXXX.pt 
 #For baseline
 #WORK_DIR = "runs/enwik8_baseline"
 NUM_LAYERS = 10
-# For UNet, typically use:
+# For UNete:
 WORK_DIR = "runs/enwik8_unet"
