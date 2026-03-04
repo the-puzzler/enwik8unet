@@ -154,7 +154,7 @@ class Upsample(nn.Module):
 
         y = self.proj_expand(x).view(batch_size, seq_len * self.expansion_factor, dim)
         cur_len = y.size(1)
-        if cur_len < target_len:
+        if cur_len < target_len: # for training with padding, this would be required if training different seq lengths.
             # Ragged-safe fallback: repeat last token to reach exact target_len.
             pad = y[:, -1:, :].expand(batch_size, target_len - cur_len, dim)
             y = torch.cat([y, pad], dim=1)
