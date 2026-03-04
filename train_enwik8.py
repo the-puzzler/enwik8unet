@@ -58,6 +58,12 @@ def _unwrap_model(m):
     """Return the underlying nn.Module (handles torch.compile wrapping)."""
     return getattr(m, "_orig_mod", m)
 
+def _strip_orig_mod(sd: dict):
+    """Handle state_dicts saved from torch.compile (keys prefixed with _orig_mod.)."""
+    if any(k.startswith("_orig_mod.") for k in sd.keys()):
+        return {k.replace("_orig_mod.", "", 1): v for k, v in sd.items()}
+    return sd
+
 # -----------------------------
 # Data
 # -----------------------------
@@ -223,7 +229,20 @@ else:
     logger.log_line("No ckpt_latest found; starting fresh.")
 
 if ckpt is not None and "model" in ckpt:
-    model.load_state_dict(ckpt["model"])
+    try:
+        model.load_state_dict(_strip_orig_mod(ckpt["model"]))
+    except RuntimeError as e:
+        cfg = ckpt.get("config", {})
+        raise RuntimeError(
+            "Failed to load checkpoint model weights. This is usually an architecture mismatch "
+            "(e.g., DIM/NUM_HEADS/WINDOW_SIZES/NUM_LAYERS differ between checkpoint and config.py).\n"
+            f"Checkpoint cfg (subset): MODEL_TYPE={cfg.get('MODEL_TYPE')}, DIM={cfg.get('DIM')}, "
+            f"NUM_HEADS={cfg.get('NUM_HEADS')}, WINDOW_SIZES={cfg.get('WINDOW_SIZES')}, "
+            f"NUM_LAYERS={cfg.get('NUM_LAYERS')}.\n"
+            f"Current cfg: MODEL_TYPE={model_type}, DIM={C.DIM}, NUM_HEADS={C.NUM_HEADS}, "
+            f"WINDOW_SIZES={getattr(C, 'WINDOW_SIZES', None)}, NUM_LAYERS={getattr(C, 'NUM_LAYERS', None)}.\n"
+            f"Original load error: {e}"
+        ) from e
 if C.USE_COMPILE:
     model = torch.compile(model)
 
