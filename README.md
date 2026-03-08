@@ -76,8 +76,11 @@ Left: baseline Transformer metrics. Right: simple UNet metrics.
 
 ## Results
 
-- Final test bpb (baseline): **1.19**
-- Final test bpb (UNet): **1.20**
+![Inference Profile Bars](profiling/inference_profile_bars.png)
+
+- Final test bpb (baseline): **1.1679**
+- Final test bpb (baseline_small): **1.1768**
+- Final test bpb (UNet): **1.2090**
 
 The key outcome is that both models plateau in nearly the same region. The dense baseline is slightly ahead in the recorded run, and if training were extended, the most likely change is that baseline lead grows only slightly (roughly a few hundredths, e.g. ~0.03-0.04 bpb at most), not a large late-stage separation.
 
@@ -94,13 +97,7 @@ The UNet bottleneck behaved like a meaningful latent space in downstream analysi
 - UMAP + HDBSCAN revealed coherent topical clusters.
 - Cluster-level term enrichment and word clouds showed interpretable themes (for example, technical/security-heavy spans, historical conflict clusters, citation/link-heavy text neighborhoods, and generic prose background clusters).
 
-More concretely, several clusters were especially distinctive:
-
-- One cluster was anchored by I Ching terminology (for example: "hexagram", "ching", "wilhelm"), suggesting a coherent niche topic.
-- Another grouped intelligence/security-agency language (for example: "mukhabarat", "directorate", "agency", "security").
-- A separate cluster concentrated Balkans war-crimes terms (for example: "srebrenica", "srpska", "indicted", "sentenced"), indicating a strong geopolitical/human-rights theme.
-- Another appeared to capture citation/external-links neighborhoods, including outlet-like tokens and reference-heavy text structure.
-- Larger background clusters were dominated by common function words and read more like generic prose rather than a single topic.
+The bottleneck embeddings capture real semantic information with clear themes per cluster. For example, cluster 25 is clearly on religious topics. Meanwhile, clusters 22 and 21 are mathematical and 9 is computing.
 
 This indicates the compressed representation is not only computationally useful, but also semantically structured.
 
