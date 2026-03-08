@@ -1,0 +1,213 @@
+{
+  "settings": {
+    "train_warmup_steps": 2,
+    "train_bench_steps": 5,
+    "infer_warmup_iters": 8,
+    "infer_bench_iters": 40,
+    "train_flop_multiplier": 3.0
+  },
+  "runs": {
+    "unet": {
+      "run_dir": "runs/enwik8_unet",
+      "cfg": {
+        "MODEL_TYPE": "unet",
+        "BATCH_SIZE": 128,
+        "GRAD_ACCUM": 2,
+        "BLOCK_SIZE": 1024,
+        "DIM": 512,
+        "NUM_HEADS": 8,
+        "MLP_RATIO": 4.0,
+        "NUM_LAYERS": 10,
+        "WINDOW_SIZES": [
+          4,
+          4,
+          2,
+          2
+        ],
+        "DROPOUT": 0.1,
+        "USE_AMP": true,
+        "USE_COMPILE": true
+      }
+    },
+    "baseline_small": {
+      "run_dir": "runs/enwik8_baseline_small",
+      "cfg": {
+        "MODEL_TYPE": "baseline",
+        "BATCH_SIZE": 32,
+        "GRAD_ACCUM": 8,
+        "BLOCK_SIZE": 1024,
+        "DIM": 240,
+        "NUM_HEADS": 8,
+        "MLP_RATIO": 4.0,
+        "NUM_LAYERS": 10,
+        "WINDOW_SIZES": [
+          4,
+          4,
+          2,
+          2
+        ],
+        "DROPOUT": 0.1,
+        "USE_AMP": true,
+        "USE_COMPILE": true
+      }
+    },
+    "baseline": {
+      "run_dir": "runs/enwik8_baseline",
+      "cfg": {
+        "MODEL_TYPE": "baseline",
+        "BATCH_SIZE": 16,
+        "GRAD_ACCUM": 8,
+        "BLOCK_SIZE": 1024,
+        "DIM": 512,
+        "NUM_HEADS": 8,
+        "MLP_RATIO": 4.0,
+        "NUM_LAYERS": 10,
+        "WINDOW_SIZES": [
+          4,
+          4,
+          2,
+          2
+        ],
+        "DROPOUT": 0.1,
+        "USE_AMP": true,
+        "USE_COMPILE": true
+      }
+    }
+  },
+  "train": [
+    {
+      "model": "unet",
+      "param_count": 42083840,
+      "batch": 64,
+      "config_batch": 128,
+      "seq_len": 1024,
+      "grad_accum": 2,
+      "step_ms": 560.5641640722752,
+      "tokens_per_s": 233821.58261386916,
+      "fwd_flops_per_step_tflop": 3.558984384512,
+      "train_flops_proxy_tflop": 10.676953153536,
+      "achieved_tflops_proxy": 19.046799345809394,
+      "peak_alloc_mib": 16537.76953125,
+      "peak_reserved_mib": 30868.0,
+      "test_bpb": 1.2089784435770208,
+      "test_loss_nats": 0.8379999995231628,
+      "test_eval_iters": 4000,
+      "test_batch_size": 16
+    },
+    {
+      "model": "baseline_small",
+      "param_count": 9282480,
+      "batch": 32,
+      "config_batch": 32,
+      "seq_len": 1024,
+      "grad_accum": 8,
+      "step_ms": 3186.967660486698,
+      "tokens_per_s": 82254.99218274673,
+      "fwd_flops_per_step_tflop": 7.4088185856,
+      "train_flops_proxy_tflop": 22.2264557568,
+      "achieved_tflops_proxy": 6.974170473196984,
+      "peak_alloc_mib": 24408.3486328125,
+      "peak_reserved_mib": 26592.0,
+      "test_bpb": 1.176828686951618,
+      "test_loss_nats": 0.8157154863625765,
+      "test_eval_iters": 4000,
+      "test_batch_size": 16
+    },
+    {
+      "model": "baseline",
+      "param_count": 42084864,
+      "batch": 16,
+      "config_batch": 16,
+      "seq_len": 1024,
+      "grad_accum": 8,
+      "step_ms": 2245.3289974480867,
+      "tokens_per_s": 58375.409638840894,
+      "fwd_flops_per_step_tflop": 13.7438953472,
+      "train_flops_proxy_tflop": 41.2316860416,
+      "achieved_tflops_proxy": 18.363316061237168,
+      "peak_alloc_mib": 15427.60791015625,
+      "peak_reserved_mib": 16220.0,
+      "test_bpb": 1.16788206206505,
+      "test_loss_nats": 0.8095141585469245,
+      "test_eval_iters": 4000,
+      "test_batch_size": 16
+    }
+  ],
+  "inference": [
+    {
+      "model": "unet",
+      "param_count": 42083840,
+      "batch": 1,
+      "config_batch": 128,
+      "seq_len": 1024,
+      "iter_ms": 10.348287736997008,
+      "tokens_per_s": 98953.56855405305,
+      "fwd_flops_per_iter_tflop": 0.027804565504,
+      "achieved_tflops": 2.686875955777073,
+      "start_alloc_mib": 354.33642578125,
+      "start_reserved_mib": 7904.0,
+      "peak_alloc_mib": 510.77392578125,
+      "peak_reserved_mib": 7914.0,
+      "peak_alloc_delta_mib": 156.4375,
+      "peak_reserved_delta_mib": 10.0,
+      "single_forward_alloc_delta_mib": 473.2470703125,
+      "single_forward_peak_alloc_delta_mib": 156.9375,
+      "single_forward_peak_reserved_delta_mib": 10.0,
+      "best_val_bpb": 1.220453,
+      "test_bpb": 1.2089784435770208,
+      "test_loss_nats": 0.8379999995231628,
+      "test_eval_iters": 4000,
+      "test_batch_size": 16
+    },
+    {
+      "model": "baseline_small",
+      "param_count": 9282480,
+      "batch": 1,
+      "config_batch": 32,
+      "seq_len": 1024,
+      "iter_ms": 10.608656518161297,
+      "tokens_per_s": 96524.94623112568,
+      "fwd_flops_per_iter_tflop": 0.0289406976,
+      "achieved_tflops": 2.7280266403625664,
+      "start_alloc_mib": 93.2724609375,
+      "start_reserved_mib": 2160.0,
+      "peak_alloc_mib": 178.54736328125,
+      "peak_reserved_mib": 2172.0,
+      "peak_alloc_delta_mib": 85.27490234375,
+      "peak_reserved_delta_mib": 12.0,
+      "single_forward_alloc_delta_mib": 1269.22265625,
+      "single_forward_peak_alloc_delta_mib": 85.77490234375,
+      "single_forward_peak_reserved_delta_mib": 12.0,
+      "best_val_bpb": 1.183001,
+      "test_bpb": 1.176828686951618,
+      "test_loss_nats": 0.8157154863625765,
+      "test_eval_iters": 4000,
+      "test_batch_size": 16
+    },
+    {
+      "model": "baseline",
+      "param_count": 42084864,
+      "batch": 1,
+      "config_batch": 16,
+      "seq_len": 1024,
+      "iter_ms": 10.346615267917514,
+      "tokens_per_s": 98969.56381235027,
+      "fwd_flops_per_iter_tflop": 0.1073741824,
+      "achieved_tflops": 10.3777109344099,
+      "start_alloc_mib": 357.2197265625,
+      "start_reserved_mib": 6970.0,
+      "peak_alloc_mib": 513.2197265625,
+      "peak_reserved_mib": 6972.0,
+      "peak_alloc_delta_mib": 156.0,
+      "peak_reserved_delta_mib": 2.0,
+      "single_forward_alloc_delta_mib": 1688.24609375,
+      "single_forward_peak_alloc_delta_mib": 156.5,
+      "single_forward_peak_reserved_delta_mib": 6.0,
+      "best_val_bpb": 1.163733,
+      "test_bpb": 1.16788206206505,
+      "test_loss_nats": 0.8095141585469245,
+      "test_eval_iters": 4000,
+      "test_batch_size": 16
+    }
+  ]
+}

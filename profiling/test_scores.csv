@@ -1,0 +1,4 @@
+model,work_dir,ckpt,eval_iters,batch_size,test_loss_nats,test_bpb
+unet,runs/enwik8_unet,ckpt_best.pt,4000,16,0.8379999995231628,1.2089784435770208
+baseline,runs/enwik8_baseline,ckpt_best.pt,4000,16,0.8095141585469245,1.16788206206505
+baseline_small,runs/enwik8_baseline_small,ckpt_best.pt,4000,16,0.8157154863625765,1.176828686951618
