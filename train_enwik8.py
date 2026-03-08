@@ -152,179 +152,193 @@ class TextLogger:
 # Main
 # -----------------------------
 
-ensure_dir(C.WORK_DIR)
-set_seed(C.SEED)
+def main():
+    ensure_dir(C.WORK_DIR)
+    set_seed(C.SEED)
 
-if C.DEVICE != "cuda" or not torch.cuda.is_available():
-    raise RuntimeError("CUDA not available (or config DEVICE != 'cuda').")
+    if C.DEVICE != "cuda" or not torch.cuda.is_available():
+        raise RuntimeError("CUDA not available (or config DEVICE != 'cuda').")
 
-device = torch.device("cuda")
-model_type = str(getattr(C, "MODEL_TYPE", "baseline")).lower()
-if model_type not in ("baseline", "unet"):
-    raise ValueError(f"MODEL_TYPE must be 'baseline' or 'unet', got: {model_type}")
+    device = torch.device("cuda")
+    model_type = str(getattr(C, "MODEL_TYPE", "baseline")).lower()
+    if model_type not in ("baseline", "unet"):
+        raise ValueError(f"MODEL_TYPE must be 'baseline' or 'unet', got: {model_type}")
 
-# Validate block size constraints for UNet architecture
-if model_type == "unet":
-    ws_prod = product(C.WINDOW_SIZES)
-    if C.BLOCK_SIZE % ws_prod != 0:
-        raise ValueError(f"BLOCK_SIZE={C.BLOCK_SIZE} must be divisible by product(WINDOW_SIZES)={ws_prod}.")
-if C.BLOCK_SIZE > C.ROPE_MAX_SEQ_LEN:
-    raise ValueError(
-        f"BLOCK_SIZE={C.BLOCK_SIZE} exceeds ROPE_MAX_SEQ_LEN={C.ROPE_MAX_SEQ_LEN}.\n"
-        "Either lower BLOCK_SIZE or increase RoPE max_seq_len in your model."
+    # Validate block size constraints for UNet architecture
+    if model_type == "unet":
+        ws_prod = product(C.WINDOW_SIZES)
+        if C.BLOCK_SIZE % ws_prod != 0:
+            raise ValueError(f"BLOCK_SIZE={C.BLOCK_SIZE} must be divisible by product(WINDOW_SIZES)={ws_prod}.")
+    if C.BLOCK_SIZE > C.ROPE_MAX_SEQ_LEN:
+        raise ValueError(
+            f"BLOCK_SIZE={C.BLOCK_SIZE} exceeds ROPE_MAX_SEQ_LEN={C.ROPE_MAX_SEQ_LEN}.\n"
+            "Either lower BLOCK_SIZE or increase RoPE max_seq_len in your model."
+        )
+
+    logger = TextLogger(C.WORK_DIR)
+
+    # Save config snapshot
+    cfg_dump = {k: getattr(C, k) for k in dir(C) if k.isupper()}
+    with open(os.path.join(C.WORK_DIR, "config_snapshot.json"), "w", encoding="utf-8") as f:
+        json.dump(cfg_dump, f, indent=2)
+
+    # Data
+    data = load_enwik8_memmap(C.DATA_PATH)
+    train_arr, val_arr, test_arr = make_splits(data, train_frac=0.9, val_frac=0.05)
+    logger.log_line(
+        f"Loaded enwik8 bytes: {len(data):,} | train {len(train_arr):,} | val {len(val_arr):,} | test {len(test_arr):,}"
     )
+    logger.log_line(f"Model type: {model_type}")
 
-logger = TextLogger(C.WORK_DIR)
+    # Model
+    if model_type == "unet":
+        model = UNetTransformer(
+            vocab_size=C.VOCAB_SIZE,
+            dim=C.DIM,
+            num_heads=C.NUM_HEADS,
+            mlp_ratio=C.MLP_RATIO,
+            dropout=C.DROPOUT,
+            window_sizes=C.WINDOW_SIZES,
+        ).to(device)
+    else:
+        model = BaselineTransformer(
+            vocab_size=C.VOCAB_SIZE,
+            dim=C.DIM,
+            num_heads=C.NUM_HEADS,
+            mlp_ratio=C.MLP_RATIO,
+            dropout=C.DROPOUT,
+            num_layers=C.NUM_LAYERS,
+        ).to(device)
 
-# Save config snapshot
-cfg_dump = {k: getattr(C, k) for k in dir(C) if k.isupper()}
-with open(os.path.join(C.WORK_DIR, "config_snapshot.json"), "w", encoding="utf-8") as f:
-    json.dump(cfg_dump, f, indent=2)
+    n_params = sum(p.numel() for p in model.parameters())
+    logger.log_line(f"Model params: {n_params:,}")
 
-# Data
-data = load_enwik8_memmap(C.DATA_PATH)
-train_arr, val_arr, test_arr = make_splits(data, train_frac=0.9, val_frac=0.05)
-logger.log_line(
-    f"Loaded enwik8 bytes: {len(data):,} | train {len(train_arr):,} | val {len(val_arr):,} | test {len(test_arr):,}"
-)
-logger.log_line(f"Model type: {model_type}")
+    # Ckpt paths
+    ckpt_latest = os.path.join(C.WORK_DIR, "ckpt_latest.pt")
+    ckpt_best = os.path.join(C.WORK_DIR, "ckpt_best.pt")
 
-# Model
-if model_type == "unet":
-    model = UNetTransformer(
-        vocab_size=C.VOCAB_SIZE,
-        dim=C.DIM,
-        num_heads=C.NUM_HEADS,
-        mlp_ratio=C.MLP_RATIO,
-        dropout=C.DROPOUT,
-        window_sizes=C.WINDOW_SIZES,
-    ).to(device)
-else:
-    model = BaselineTransformer(
-        vocab_size=C.VOCAB_SIZE,
-        dim=C.DIM,
-        num_heads=C.NUM_HEADS,
-        mlp_ratio=C.MLP_RATIO,
-        dropout=C.DROPOUT,
-        num_layers=C.NUM_LAYERS, 
-    ).to(device)
+    # Resume if latest exists
+    step = 0
+    best_val_bpb = float("inf")
+    ckpt = None
+    if os.path.isfile(ckpt_latest):
+        ckpt = load_checkpoint(ckpt_latest, map_location="cpu")
+        step = int(ckpt.get("step", 0))
+        best_val_bpb = float(ckpt.get("best_val_bpb", best_val_bpb))
+        logger.log_line(f"Resumed from {ckpt_latest} at step={step} best_val_bpb={best_val_bpb:.4f}")
+    else:
+        logger.log_line("No ckpt_latest found; starting fresh.")
 
-n_params = sum(p.numel() for p in model.parameters())
-logger.log_line(f"Model params: {n_params:,}")
+    if ckpt is not None and "model" in ckpt:
+        try:
+            model.load_state_dict(_strip_orig_mod(ckpt["model"]))
+        except RuntimeError as e:
+            cfg = ckpt.get("config", {})
+            raise RuntimeError(
+                "Failed to load checkpoint model weights. This is usually an architecture mismatch "
+                "(e.g., DIM/NUM_HEADS/WINDOW_SIZES/NUM_LAYERS differ between checkpoint and config.py).\n"
+                f"Checkpoint cfg (subset): MODEL_TYPE={cfg.get('MODEL_TYPE')}, DIM={cfg.get('DIM')}, "
+                f"NUM_HEADS={cfg.get('NUM_HEADS')}, WINDOW_SIZES={cfg.get('WINDOW_SIZES')}, "
+                f"NUM_LAYERS={cfg.get('NUM_LAYERS')}.\n"
+                f"Current cfg: MODEL_TYPE={model_type}, DIM={C.DIM}, NUM_HEADS={C.NUM_HEADS}, "
+                f"WINDOW_SIZES={getattr(C, 'WINDOW_SIZES', None)}, NUM_LAYERS={getattr(C, 'NUM_LAYERS', None)}.\n"
+                f"Original load error: {e}"
+            ) from e
+    if C.USE_COMPILE:
+        model = torch.compile(model)
 
-# Ckpt paths
-ckpt_latest = os.path.join(C.WORK_DIR, "ckpt_latest.pt")
-ckpt_best = os.path.join(C.WORK_DIR, "ckpt_best.pt")
+    # Optim
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=C.LR,
+        betas=C.BETAS,
+        weight_decay=C.WEIGHT_DECAY,
+    )
+    scaler = torch.amp.GradScaler("cuda", enabled=C.USE_AMP) if hasattr(torch, "amp") else torch.cuda.amp.GradScaler(enabled=C.USE_AMP)
 
-# Resume if latest exists
-step = 0
-best_val_bpb = float("inf")
-ckpt = None
-if os.path.isfile(ckpt_latest):
-    ckpt = load_checkpoint(ckpt_latest, map_location="cpu")
-    step = int(ckpt.get("step", 0))
-    best_val_bpb = float(ckpt.get("best_val_bpb", best_val_bpb))
-    logger.log_line(f"Resumed from {ckpt_latest} at step={step} best_val_bpb={best_val_bpb:.4f}")
-else:
-    logger.log_line("No ckpt_latest found; starting fresh.")
+    if ckpt is not None:
+        optimizer.load_state_dict(ckpt["optimizer"])
+        if C.USE_AMP and ckpt.get("scaler") is not None:
+            scaler.load_state_dict(ckpt["scaler"])
 
-if ckpt is not None and "model" in ckpt:
-    try:
-        model.load_state_dict(_strip_orig_mod(ckpt["model"]))
-    except RuntimeError as e:
-        cfg = ckpt.get("config", {})
-        raise RuntimeError(
-            "Failed to load checkpoint model weights. This is usually an architecture mismatch "
-            "(e.g., DIM/NUM_HEADS/WINDOW_SIZES/NUM_LAYERS differ between checkpoint and config.py).\n"
-            f"Checkpoint cfg (subset): MODEL_TYPE={cfg.get('MODEL_TYPE')}, DIM={cfg.get('DIM')}, "
-            f"NUM_HEADS={cfg.get('NUM_HEADS')}, WINDOW_SIZES={cfg.get('WINDOW_SIZES')}, "
-            f"NUM_LAYERS={cfg.get('NUM_LAYERS')}.\n"
-            f"Current cfg: MODEL_TYPE={model_type}, DIM={C.DIM}, NUM_HEADS={C.NUM_HEADS}, "
-            f"WINDOW_SIZES={getattr(C, 'WINDOW_SIZES', None)}, NUM_LAYERS={getattr(C, 'NUM_LAYERS', None)}.\n"
-            f"Original load error: {e}"
-        ) from e
-if C.USE_COMPILE:
-    model = torch.compile(model)
+    # Fixed causal mask (BLOCK_SIZE fixed)
+    causal_mask = get_causal_mask(C.BLOCK_SIZE, device)
 
-# Optim
-optimizer = torch.optim.AdamW(
-    model.parameters(),
-    lr=C.LR,
-    betas=C.BETAS,
-    weight_decay=C.WEIGHT_DECAY,
-)
-scaler = torch.amp.GradScaler("cuda", enabled=C.USE_AMP) if hasattr(torch, "amp") else torch.cuda.amp.GradScaler(enabled=C.USE_AMP)
+    model.train()
+    t0 = time.time()
+    last_log_time = t0
+    tokens_seen = 0
+    tokens_seen_at_last_log = 0
 
-if ckpt is not None:
-    optimizer.load_state_dict(ckpt["optimizer"])
-    if C.USE_AMP and ckpt.get("scaler") is not None:
-        scaler.load_state_dict(ckpt["scaler"])
+    logger.log_line("Starting training loop.")
 
-# Fixed causal mask (BLOCK_SIZE fixed)
-causal_mask = get_causal_mask(C.BLOCK_SIZE, device)
+    while step < C.MAX_STEPS:
+        lr = get_lr(step)
+        for pg in optimizer.param_groups:
+            pg["lr"] = lr
 
-model.train()
-t0 = time.time()
-last_log_time = t0
-tokens_seen = 0
-tokens_seen_at_last_log = 0
+        optimizer.zero_grad(set_to_none=True)
+        accum_loss = 0.0
 
-logger.log_line("Starting training loop.")
+        for micro in range(C.GRAD_ACCUM):
+            x, y = sample_batch(train_arr, C.BATCH_SIZE, C.BLOCK_SIZE, device)
 
-while step < C.MAX_STEPS:
-    lr = get_lr(step)
-    for pg in optimizer.param_groups:
-        pg["lr"] = lr
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=C.USE_AMP):
+                logits = model(x, mask=causal_mask)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+                loss = loss / C.GRAD_ACCUM
 
-    optimizer.zero_grad(set_to_none=True)
-    accum_loss = 0.0
+            scaler.scale(loss).backward()
+            accum_loss += loss.item()
+            tokens_seen += x.numel()
 
-    for micro in range(C.GRAD_ACCUM):
-        x, y = sample_batch(train_arr, C.BATCH_SIZE, C.BLOCK_SIZE, device)
+        if C.CLIP_GRAD_NORM and C.CLIP_GRAD_NORM > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), C.CLIP_GRAD_NORM)
 
-        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=C.USE_AMP):
-            logits = model(x, mask=causal_mask)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-            loss = loss / C.GRAD_ACCUM
+        scaler.step(optimizer)
+        scaler.update()
 
-        scaler.scale(loss).backward()
-        accum_loss += loss.item()
-        tokens_seen += x.numel()
+        # Logging
+        if step % C.LOG_INTERVAL == 0:
+            now = time.time()
+            dt = now - last_log_time
+            tok_per_sec = (tokens_seen - tokens_seen_at_last_log) / max(1e-9, dt)
 
-    if C.CLIP_GRAD_NORM and C.CLIP_GRAD_NORM > 0:
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), C.CLIP_GRAD_NORM)
+            train_loss_nats = accum_loss
+            train_bpb = train_loss_nats / LN2
 
-    scaler.step(optimizer)
-    scaler.update()
+            logger.log_line(
+                f"step {step} | lr {lr:.2e} | loss(nats) {train_loss_nats:.4f} | bpb {train_bpb:.4f} | tok/s {human_num(tok_per_sec)}"
+            )
+            logger.log_metric(step, "train", train_loss_nats, train_bpb, lr, tok_per_sec)
+            last_log_time = now
+            tokens_seen_at_last_log = tokens_seen
 
-    # Logging
-    if step % C.LOG_INTERVAL == 0:
-        now = time.time()
-        dt = now - last_log_time
-        tok_per_sec = (tokens_seen - tokens_seen_at_last_log) / max(1e-9, dt)
+        # Eval
+        if step > 0 and step % C.EVAL_INTERVAL == 0:
+            val_loss, val_bpb = estimate_loss_and_bpb(
+                model, val_arr, C.BLOCK_SIZE, C.BATCH_SIZE, C.EVAL_ITERS, device, causal_mask, C.USE_AMP
+            )
+            logger.log_line(f"[eval] step {step} | val_loss(nats) {val_loss:.4f} | val_bpb {val_bpb:.4f}")
+            logger.log_metric(step, "val", val_loss, val_bpb, lr, 0.0)
 
-        train_loss_nats = accum_loss
-        train_bpb = train_loss_nats / LN2
+            # Save best
+            if val_bpb < best_val_bpb:
+                best_val_bpb = val_bpb
+                payload = {
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scaler": scaler.state_dict() if C.USE_AMP else None,
+                    "step": step,
+                    "best_val_bpb": best_val_bpb,
+                    "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
+                }
+                save_checkpoint(ckpt_best, payload)
+                logger.log_line(f"[ckpt] saved BEST: {ckpt_best} (best_val_bpb={best_val_bpb:.4f})")
 
-        logger.log_line(
-            f"step {step} | lr {lr:.2e} | loss(nats) {train_loss_nats:.4f} | bpb {train_bpb:.4f} | tok/s {human_num(tok_per_sec)}"
-        )
-        logger.log_metric(step, "train", train_loss_nats, train_bpb, lr, tok_per_sec)
-        last_log_time = now
-        tokens_seen_at_last_log = tokens_seen
-
-    # Eval
-    if step > 0 and step % C.EVAL_INTERVAL == 0:
-        val_loss, val_bpb = estimate_loss_and_bpb(
-            model, val_arr, C.BLOCK_SIZE, C.BATCH_SIZE, C.EVAL_ITERS, device, causal_mask, C.USE_AMP
-        )
-        logger.log_line(f"[eval] step {step} | val_loss(nats) {val_loss:.4f} | val_bpb {val_bpb:.4f}")
-        logger.log_metric(step, "val", val_loss, val_bpb, lr, 0.0)
-
-        # Save best
-        if val_bpb < best_val_bpb:
-            best_val_bpb = val_bpb
+        # Save latest
+        if step > 0 and step % C.CKPT_INTERVAL == 0:
             payload = {
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
@@ -333,46 +347,37 @@ while step < C.MAX_STEPS:
                 "best_val_bpb": best_val_bpb,
                 "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
             }
-            save_checkpoint(ckpt_best, payload)
-            logger.log_line(f"[ckpt] saved BEST: {ckpt_best} (best_val_bpb={best_val_bpb:.4f})")
+            save_checkpoint(ckpt_latest, payload)
+            logger.log_line(f"[ckpt] saved latest: {ckpt_latest}")
 
-    # Save latest
-    if step > 0 and step % C.CKPT_INTERVAL == 0:
-        payload = {
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scaler": scaler.state_dict() if C.USE_AMP else None,
-            "step": step,
-            "best_val_bpb": best_val_bpb,
-            "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
-        }
-        save_checkpoint(ckpt_latest, payload)
-        logger.log_line(f"[ckpt] saved latest: {ckpt_latest}")
+        # Optional snapshot
+        if C.CKPT_SNAPSHOT_INTERVAL and C.CKPT_SNAPSHOT_INTERVAL > 0 and step > 0 and step % C.CKPT_SNAPSHOT_INTERVAL == 0:
+            snap = os.path.join(C.WORK_DIR, f"ckpt_step_{step:06d}.pt")
+            payload = {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scaler": scaler.state_dict() if C.USE_AMP else None,
+                "step": step,
+                "best_val_bpb": best_val_bpb,
+                "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
+            }
+            save_checkpoint(snap, payload)
+            logger.log_line(f"[ckpt] saved snapshot: {snap}")
 
-    # Optional snapshot
-    if C.CKPT_SNAPSHOT_INTERVAL and C.CKPT_SNAPSHOT_INTERVAL > 0 and step > 0 and step % C.CKPT_SNAPSHOT_INTERVAL == 0:
-        snap = os.path.join(C.WORK_DIR, f"ckpt_step_{step:06d}.pt")
-        payload = {
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scaler": scaler.state_dict() if C.USE_AMP else None,
-            "step": step,
-            "best_val_bpb": best_val_bpb,
-            "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
-        }
-        save_checkpoint(snap, payload)
-        logger.log_line(f"[ckpt] saved snapshot: {snap}")
+        step += 1
 
-    step += 1
+    # Final save
+    payload = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict() if C.USE_AMP else None,
+        "step": step,
+        "best_val_bpb": best_val_bpb,
+        "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
+    }
+    save_checkpoint(ckpt_latest, payload)
+    logger.log_line(f"Training done. Final ckpt: {ckpt_latest}")
 
-# Final save
-payload = {
-    "model": model.state_dict(),
-    "optimizer": optimizer.state_dict(),
-    "scaler": scaler.state_dict() if C.USE_AMP else None,
-    "step": step,
-    "best_val_bpb": best_val_bpb,
-    "config": {k: getattr(C, k) for k in dir(C) if k.isupper()},
-}
-save_checkpoint(ckpt_latest, payload)
-logger.log_line(f"Training done. Final ckpt: {ckpt_latest}")
+
+if __name__ == "__main__":
+    main()

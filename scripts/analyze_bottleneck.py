@@ -32,9 +32,29 @@ def _strip_orig_mod(sd: dict):
     return sd
 
 
-def sample_spans(data_arr: np.ndarray, num_spans: int, block_size: int):
-    max_start = len(data_arr) - block_size
-    starts = np.random.randint(0, max_start, size=(num_spans,))
+def sample_spans(data_arr: np.ndarray, num_spans: int, block_size: int, no_overlap: bool = False):
+    if num_spans <= 0:
+        raise ValueError("num_spans must be > 0")
+
+    if no_overlap:
+        max_non_overlap = len(data_arr) // block_size
+        target = min(num_spans, max_non_overlap)
+        if target == 0:
+            raise ValueError("Not enough bytes to sample even one non-overlapping span.")
+
+        # Build a maximal non-overlapping lattice with a random offset in the available remainder.
+        remainder = len(data_arr) - (max_non_overlap * block_size)
+        offset = np.random.randint(0, remainder + 1) if remainder > 0 else 0
+        starts_all = offset + (np.arange(max_non_overlap, dtype=np.int64) * block_size)
+        if target < max_non_overlap:
+            sel = np.random.choice(max_non_overlap, size=target, replace=False)
+            starts = np.sort(starts_all[sel])
+        else:
+            starts = starts_all
+    else:
+        max_start = len(data_arr) - block_size
+        starts = np.random.randint(0, max_start + 1, size=(num_spans,))
+
     spans = np.stack([data_arr[s : s + block_size].astype(np.int64) for s in starts], axis=0)
     return torch.from_numpy(spans)
 
@@ -109,6 +129,7 @@ def generate_wordclouds(spans_np, labels, out_dir):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-spans", type=int, default=1000, help="number of random test spans to sample")
+    parser.add_argument("--no-overlap", action="store_true", help="enforce non-overlapping spans; caps count at floor(test_len / block_size)")
     parser.add_argument("--work-dir", type=str, default=C.WORK_DIR, help="run directory with checkpoints")
     parser.add_argument("--ckpt", type=str, default=None, help="path to checkpoint (defaults to ckpt_best.pt)")
     parser.add_argument("--out-dir", type=str, default=None, help="where to save analysis outputs")
@@ -141,7 +162,14 @@ def main():
 
     mask = get_causal_mask(C.BLOCK_SIZE, device)
 
-    spans = sample_spans(test_arr, args.num_spans, C.BLOCK_SIZE)
+    spans = sample_spans(test_arr, args.num_spans, C.BLOCK_SIZE, no_overlap=args.no_overlap)
+    if args.no_overlap:
+        max_non_overlap = len(test_arr) // C.BLOCK_SIZE
+        if args.num_spans > max_non_overlap:
+            print(
+                f"--no-overlap enabled: requested {args.num_spans} spans but max possible is "
+                f"{max_non_overlap}; using {spans.size(0)}."
+            )
     pooled = collect_bottlenecks(model, spans, mask, device, batch_size=args.batch_size)  # [N, D]
 
     out_dir = args.out_dir or os.path.join(args.work_dir, "analysis")

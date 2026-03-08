@@ -12,19 +12,36 @@ import os
 import re
 import argparse
 import math
+import csv
 import numpy as np
 import matplotlib.pyplot as plt
 
 
 def plot_umap(umap_xy, labels, out_path):
     plt.figure(figsize=(8, 6))
-    palette = plt.cm.get_cmap("tab20")
+    palette = plt.get_cmap("tab20")
     unique = sorted(set(labels))
+    centers = []
     for lab in unique:
         mask = labels == lab
         color = palette(lab % palette.N) if lab >= 0 else (0.6, 0.6, 0.6, 0.4)
-        plt.scatter(umap_xy[mask, 0], umap_xy[mask, 1], s=8, alpha=0.7, label=str(lab), color=color)
-    plt.legend(title="cluster", bbox_to_anchor=(1.05, 1), loc="upper left", fontsize=8)
+        plt.scatter(umap_xy[mask, 0], umap_xy[mask, 1], s=8, alpha=0.7, color=color)
+        if lab >= 0 and np.any(mask):
+            cx = float(np.median(umap_xy[mask, 0]))
+            cy = float(np.median(umap_xy[mask, 1]))
+            centers.append((lab, cx, cy, color))
+
+    for lab, cx, cy, color in centers:
+        plt.text(
+            cx,
+            cy,
+            str(lab),
+            fontsize=9,
+            ha="center",
+            va="center",
+            color="black",
+            bbox={"facecolor": "white", "edgecolor": color, "boxstyle": "round,pad=0.2", "alpha": 0.8},
+        )
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
     plt.close()
@@ -60,6 +77,8 @@ def generate_wordclouds(spans_np, labels, out_dir):
     tsv_lines = []
     wc_images = []
     wc_labels = []
+    wc_dir = os.path.join(out_dir, "word_clouds")
+    os.makedirs(wc_dir, exist_ok=True)
 
     total_docs = spans_np.shape[0]
     global_doc_counts = {}
@@ -114,6 +133,7 @@ def generate_wordclouds(spans_np, labels, out_dir):
         tsv_lines.append("\n")
 
         wc = WordCloud(width=800, height=400, max_words=200, background_color="white").generate_from_frequencies(counts)
+        wc.to_file(os.path.join(wc_dir, f"wordcloud_cluster_{lab}.png"))
         wc_images.append(wc.to_array())
         wc_labels.append(lab)
 
@@ -128,10 +148,8 @@ def generate_wordclouds(spans_np, labels, out_dir):
         cols = max(1, math.ceil(math.sqrt(n)))
         rows = math.ceil(n / cols)
         fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3.5))
-        if rows == 1 and cols == 1:
-            axes = [axes]
-        axes = [axes] if rows == 1 else axes
-        axes = axes.flatten() if hasattr(axes, "flatten") else axes
+        # Normalize to a flat list of Matplotlib Axes regardless of subplot shape.
+        axes = np.atleast_1d(axes).ravel().tolist()
 
         for idx, (img, lab) in enumerate(zip(wc_images, wc_labels)):
             ax = axes[idx]
@@ -147,6 +165,33 @@ def generate_wordclouds(spans_np, labels, out_dir):
         plt.savefig(out_path, dpi=200)
         plt.close()
         print(f"Saved word cloud grid to {out_path}")
+        print(f"Saved individual word clouds to {wc_dir}")
+
+
+def save_point_assignments(umap_xy, labels, spans_np, out_path):
+    if spans_np.shape[0] != umap_xy.shape[0] or spans_np.shape[0] != labels.shape[0]:
+        raise ValueError("Mismatch between spans/umap/labels lengths.")
+
+    def decode_span(span):
+        text = bytes(np.asarray(span, dtype=np.uint8)).decode("latin-1", errors="replace")
+        # Keep one-row-per-record CSV and preserve visible escapes.
+        text = text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        return text
+
+    with open(out_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["index", "x", "y", "cluster", "span_text"])
+        for i in range(umap_xy.shape[0]):
+            w.writerow(
+                [
+                    int(i),
+                    float(umap_xy[i, 0]),
+                    float(umap_xy[i, 1]),
+                    int(labels[i]),
+                    decode_span(spans_np[i]),
+                ]
+            )
+    print(f"Saved point assignments to {out_path}")
 
 
 def main():
@@ -155,7 +200,7 @@ def main():
     parser.add_argument("--recompute-umap", action="store_true", help="recompute UMAP instead of using existing umap_2d.npy if present")
     parser.add_argument("--n-neighbors", type=int, default=30, help="UMAP n_neighbors")
     parser.add_argument("--min-dist", type=float, default=0.1, help="UMAP min_dist")
-    parser.add_argument("--min-cluster-size", type=int, default=10, help="HDBSCAN min_cluster_size")
+    parser.add_argument("--min-cluster-size", type=int, default=33, help="HDBSCAN min_cluster_size")
     parser.add_argument("--min-samples", type=int, default=5, help="HDBSCAN min_samples")
     parser.add_argument("--metric", type=str, default="euclidean", help="HDBSCAN metric")
     parser.add_argument("--spans-path", type=str, default=None, help="optional .npy containing spans [N, block_size] for wordclouds (defaults to analysis_dir/spans.npy)")
@@ -209,6 +254,8 @@ def main():
     spans_path = args.spans_path or os.path.join(args.analysis_dir, "spans.npy")
     if os.path.isfile(spans_path):
         spans = np.load(spans_path)
+        assignments_path = os.path.join(args.analysis_dir, f"umap_points_clusters_spans{suffix or ''}.csv")
+        save_point_assignments(umap_xy, labels, spans, assignments_path)
         generate_wordclouds(spans, labels, args.analysis_dir)
     else:
         print(f"No spans file found at {spans_path}; skipping wordclouds.")

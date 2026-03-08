@@ -14,9 +14,9 @@ USE_AMP = True            # mixed precision
 USE_COMPILE = True        # torch.compile (PyTorch 2.x)
 
 # Model
-MODEL_TYPE = "unet"  # "baseline" or "unet"
+MODEL_TYPE = "baseline"  # "baseline" or "unet"
 VOCAB_SIZE = 256          # byte-level
-DIM = 512
+DIM = 240 #240 for small baseline
 NUM_HEADS = 8
 MLP_RATIO = 4.0
 DROPOUT = 0.1
@@ -25,8 +25,8 @@ ROPE_MAX_SEQ_LEN = 2048      # must be >= BLOCK_SIZE (matches your model default
 
 # Training
 BLOCK_SIZE = 1024
-BATCH_SIZE = 128 #16 < 64    #128 for unet
-GRAD_ACCUM = 2    #2 for unet, 8 baseline
+BATCH_SIZE = 32 #16 for baseline ,    #128 for unet, 32 for baseline small
+GRAD_ACCUM = 8    #2 for unet, 8 baseline
 
 MAX_STEPS = 100_000
 WARMUP_STEPS = 2_000
@@ -46,7 +46,7 @@ CKPT_SNAPSHOT_INTERVAL = 10000 # also save runs/enwik8_unet/ckpt_step_XXXXXX.pt 
 
 
 #For baseline
-#WORK_DIR = "runs/enwik8_baseline"
+WORK_DIR = "runs/enwik8_baseline_small"
 NUM_LAYERS = 10
 # For UNete:
-WORK_DIR = "runs/enwik8_unet"
+# WORK_DIR = "runs/enwik8_unet"
