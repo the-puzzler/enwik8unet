@@ -6,6 +6,8 @@ The goal was not to build a complex tokenizer-inside-the-model system, but to te
 
 In this setup, we achieve about **2.7x lower single-forward memory allocation with no meaningful performance loss** in the compute-matched comparison.
 
+For broader results and deeper analysis on this direction, see the main blog post: https://the-puzzler.github.io/share/tokens-who-needs-them.html
+
 ## Contents
 
 - [Motivation](#motivation)
