@@ -66,13 +66,7 @@ Architecture schematic:
 
 ## Curves
 
-<p align="center">
-  <img src="metrics_plot.png" alt="Baseline training metrics" width="48%" />
-  <img src="metrics_plot_unet.png" alt="UNet training metrics" width="48%" />
-</p>
-<p align="center"><em>
-Left: baseline Transformer metrics. Right: simple UNet metrics.
-</em></p>
+![Validation bpb vs FLOPs](profiling/val_vs_flops.png)
 
 ## Results
 
@@ -82,12 +76,10 @@ Left: baseline Transformer metrics. Right: simple UNet metrics.
 - Final test bpb (baseline_small): **1.1768**
 - Final test bpb (UNet): **1.2090**
 
-The key outcome is that both models plateau in nearly the same region. The dense baseline is slightly ahead in the recorded run, and if training were extended, the most likely change is that baseline lead grows only slightly (roughly a few hundredths, e.g. ~0.03-0.04 bpb at most), not a large late-stage separation.
-
 So the main result is:
 
 - **Quality:** near-parity with dense Transformer at this scale.
-- **Efficiency:** substantial reduction in estimated compute and KV-cache footprint for the UNet design.
+- **Efficiency:** substantial memory reduction, with about **2.7x lower single-forward memory allocation** than the compute-matched baseline (`baseline_small`).
 
 ## Bottleneck Embedding Analysis
 
