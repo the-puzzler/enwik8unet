@@ -4,6 +4,8 @@ This repo explores a simple UNet-style autoregressive language model on **enwik8
 
 The goal was not to build a complex tokenizer-inside-the-model system, but to test whether a **fixed, simple hierarchical compression/expansion pattern** can keep quality close to a standard Transformer while reducing compute and memory.
 
+In this setup, we achieve about **2.7x lower single-forward memory allocation with no meaningful performance loss** in the compute-matched comparison.
+
 ## Contents
 
 - [Motivation](#motivation)
