@@ -65,8 +65,9 @@ Architecture schematic:
 
 - Dataset: `enwik8` (byte-level)
 - Hardware: NVIDIA A10 24GB
-- Baseline run: ~9h, ~11k steps, batch 32, grad accum 8
-- UNet run: ~21h, ~100k steps, batch 128, grad accum 2
+- Baseline run: 100k steps, batch 32, grad accum 8
+- UNet run: 100k steps, batch 128, grad accum 2
+- Baseline Small run: 100k steps, batch 32, grad accum 6
 
 ## Curves
 
